@@ -72,6 +72,51 @@ SHA256 : 17a88b2ed053bc1e54439a841b744bb2ee10f4ab90492ad431827db1f390b457
 - root 后的内核模块行为（KDP/RKP/DEFEX 交互）已在目标固件上实测，但**不保证在其他固件版本上的行为**
 - 请勿将本工具用于非法用途；仅供设备所有者在自己的设备上研究与使用
 
+## 📁 仓库结构
+
+本仓库不仅发布 APK，也**完整托管源码与构建链**，可克隆后从零复现全部产物：
+
+```
+s9180-rootmygalaxy/
+├── README.md                                    ← 本文件
+├── LICENSE                                      ← GPL-3.0（KernelSU 衍生代码）
+├── patch/
+│   └── KernelSU-v3.3.0-samsung-kdp-rkp-defex.patch
+│       核心成果：将 Samsung KDP/RKP/DEFEX 内核加固适配从 v3.2.5
+│       移植到 KernelSU v3.3.0 源码树（16 文件，干净树上 round-trip 可过）
+├── .github/workflows/
+│   └── build.yml                                ← GitHub Actions 构建流水线
+│       （DDK 容器构建 .ko + NDK r29 交叉编译 ksud，手动触发）
+├── scripts/
+│   ├── 01-build-module.sh                       ← 本地构建内核模块（需 docker）
+│   ├── 02-build-ksud.sh                         ← 本地交叉编译 ksud（需 NDK，rust_embed 内嵌 .ko）
+│   ├── 03-audit-module.sh                       ← 符号审计（硬门槛：missing=0；工具自动从上游拉取）
+│   ├── 04-deploy-device.ps1                     ← 真机部署（推送 ksud + exploit + late-load）
+│   ├── build_fzg1_apk.py                        ← App 重打包：替换内嵌 payload/helper/feed
+│   └── build_ksu330_apk.py                      ← App 重打包：内嵌 ksud 升级为 v3.3.0（本仓库 v0.2.36-ksu330 的来源）
+└── docs/
+    ├── BUILD.md                                 ← 构建指南（Actions / 本地两种方式 + 已知构建坑）
+    └── VERIFY.md                                ← 真机部署与验证清单（预热/时序铁律/排错）
+```
+
+### 快速开始（开发者）
+
+```sh
+git clone https://github.com/deancyl/s9180-rootmygalaxy.git
+cd s9180-rootmygalaxy
+# 构建见 docs/BUILD.md；真机验证见 docs/VERIFY.md
+```
+
+### 二进制产物的来源与校验
+
+| Release 内 APK | 构建方式 | 校验 |
+|---|---|---|
+| `rootmygalaxy-0.2.36-fzg1` | 上游原版（未修改） | 见 Release 页 |
+| `rootmygalaxy-0.2.36-ksu330` | `scripts/build_ksu330_apk.py` 对原版做**最小差异替换**（仅内嵌 ksud 资产 + feed size），全部 139 个条目中 136 个逐字节一致 | 见 Release 页 |
+
+App 基线来自上游 Root-My-Galaxy（Apache-2.0），内核侧补丁衍生自 KernelSU（GPL-3.0），
+audit 工具取自上游 Payloads 仓库（Apache-2.0），许可证归属详见 LICENSE 与上方说明。
+
 ## 🙏 致谢
 
 - [BuSung-dev/Root-My-Galaxy](https://github.com/BuSung-dev/Root-My-Galaxy) — 上游项目

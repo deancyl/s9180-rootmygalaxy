@@ -1,0 +1,152 @@
+name: ksu-330-dm3q
+
+on:
+  workflow_dispatch:
+
+env:
+  TARGET_RELEASE: 5.15.189-android13-8-33413713-abS9180ZHS8FZG1
+  KSU_VERSION: "32601"
+  DDK_IMAGE: ghcr.io/ylarod/ddk-min:android13-5.15-20260828
+
+jobs:
+  module:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repo (patch file)
+        uses: actions/checkout@v4
+
+      - name: Checkout KernelSU v3.3.0 (full history -> version 32601)
+        run: |
+          git clone --branch v3.3.0 https://github.com/tiann/KernelSU ksu
+          git -C ksu rev-list --count HEAD
+
+      - name: Apply Samsung KDP/RKP/DEFEX patch
+        run: |
+          git -C ksu apply "$GITHUB_WORKSPACE/patch/KernelSU-v3.3.0-samsung-kdp-rkp-defex.patch"
+          echo "patch applied"
+
+      - name: Build module in DDK container
+        run: |
+          docker run --rm -v "$PWD/ksu:/workspace" -w /workspace/kernel \
+            -e TARGET_RELEASE -e KSU_VERSION \
+            "$DDK_IMAGE" \
+            bash -lc '
+              set -e
+              : "${KDIR:?KDIR missing in DDK image}"
+              echo "container KDIR=$KDIR"
+              sed -i "s/^#define UTS_RELEASE.*/#define UTS_RELEASE \"$TARGET_RELEASE\"/" \
+                "$KDIR/include/generated/utsrelease.h" 2>/dev/null || true
+              echo "$TARGET_RELEASE" > "$KDIR/include/config/kernel.release" 2>/dev/null || true
+              make clean || true
+              make KDIR="$KDIR" \
+                   KSU_VERSION="$KSU_VERSION" \
+                   CONFIG_KSU=m \
+                   CONFIG_KSU_SAMSUNG_KDP=y \
+                   CONFIG_KSU_SAMSUNG_RKP=y \
+                   CONFIG_KSU_SAMSUNG_DEFEX=y \
+                   CC=clang LLVM=1 -j"$(nproc)"
+              llvm-strip -d kernelsu.ko
+              modinfo kernelsu.ko
+            '
+
+      - name: Collect module artifact
+        run: |
+          mkdir -p out
+          cp ksu/kernel/kernelsu.ko out/android13-5.15_kernelsu-dm3q-S9180ZHS8FZG1-330.ko
+          md5sum out/* | tee out/CHECKSUMS.txt
+          cat out/CHECKSUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernelsu-330-dm3q-ko
+          path: out/
+
+  ksud:
+    runs-on: ubuntu-latest
+    needs: module
+    steps:
+      - name: Checkout this repo (patch file)
+        uses: actions/checkout@v4
+
+      - name: Checkout KernelSU v3.3.0 (patched ksud source)
+        uses: actions/checkout@v4
+        with:
+          repository: tiann/KernelSU
+          ref: v3.3.0
+          path: ksu
+          fetch-depth: 0
+
+      - name: Apply Samsung patch
+        run: |
+          git -C ksu apply "$GITHUB_WORKSPACE/patch/KernelSU-v3.3.0-samsung-kdp-rkp-defex.patch"
+          echo "patch applied"
+
+      - name: Rewrite dead Kernel-SU org git deps to ReSukiSU mirrors
+        run: |
+          # The Kernel-SU org (adb_client, java-properties, ksu_props, rustix)
+          # no longer exists on GitHub; ReSukiSU mirrors keep the same
+          # revisions (verified: d97a9664 / master / 6f57231 / 4a53fbc).
+          grep -rl "github.com/Kernel-SU/" ksu/userspace/*/Cargo.toml | while read -r f; do
+            sed -i 's|github.com/Kernel-SU/|github.com/ReSukiSU/|g' "$f"
+            echo "rewrote: $f"
+          done
+          grep -n "ReSukiSU" ksu/userspace/ksud/Cargo.toml ksu/userspace/ksuinit/Cargo.toml
+
+      - name: Download module artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: kernelsu-330-dm3q-ko
+          path: out
+
+      - name: Place module as rust_embed late-load asset
+        run: |
+          mkdir -p ksu/userspace/ksud/bin/aarch64
+          cp out/android13-5.15_kernelsu-dm3q-S9180ZHS8FZG1-330.ko \
+             ksu/userspace/ksud/bin/aarch64/android13-5.15_kernelsu.ko
+          ls -l ksu/userspace/ksud/bin/aarch64/
+
+      - name: Install Android NDK r29
+        run: |
+          wget -q https://dl.google.com/android/repository/android-ndk-r29-linux.zip
+          unzip -q android-ndk-r29-linux.zip
+          mv android-ndk-r29 "$HOME/ndk-r29"
+          echo "ANDROID_NDK_HOME=$HOME/ndk-r29" >> "$GITHUB_ENV"
+          TOOLBIN="$HOME/ndk-r29/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          # cc-rs looks for the bare aarch64-linux-android-clang wrapper;
+          # newer NDKs may ship only API-suffixed drivers. Provide both.
+          if ! [ -f "$TOOLBIN/aarch64-linux-android-clang" ]; then
+            ln -sf "$TOOLBIN/aarch64-linux-android29-clang" "$TOOLBIN/aarch64-linux-android-clang"
+            echo "created bare clang symlink"
+          fi
+          ls "$TOOLBIN" | grep "aarch64-linux-android" | head -5
+          echo "$TOOLBIN" >> "$GITHUB_PATH"
+          echo "CC_aarch64_linux_android=aarch64-linux-android29-clang" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=llvm-ar" >> "$GITHUB_ENV"
+          echo "RANLIB_aarch64_linux_android=llvm-ranlib" >> "$GITHUB_ENV"
+
+      - name: Build ksud (aarch64-linux-android)
+        run: |
+          rustup target add aarch64-linux-android
+          LD="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
+          test -f "$LD"
+          mkdir -p ksu/userspace/ksud/.cargo
+          printf '[target.aarch64-linux-android]\nlinker = "%s"\n' "$LD" \
+            > ksu/userspace/ksud/.cargo/config.toml
+          cd ksu/userspace/ksud
+          cargo build --release --target aarch64-linux-android
+
+      - name: Collect ksud artifact
+        run: |
+          find ksu -maxdepth 3 -type d -name target | head -3
+          mkdir -p final
+          BIN=$(find ksu -type f -path "*release/ksud" -not -path "*/deps/*" | head -1)
+          echo "binary: $BIN"
+          test -n "$BIN"
+          cp "$BIN" final/ksud-dm3q-S9180ZHS8FZG1-330-kdp
+          md5sum final/* | tee final/CHECKSUMS.txt
+          cat final/CHECKSUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ksud-330-dm3q
+          path: final/
