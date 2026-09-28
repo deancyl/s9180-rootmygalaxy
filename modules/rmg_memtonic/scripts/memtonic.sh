@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# memtonic.sh —— RMG MemTonic v1.4.1（SM-S9180 临时 Root 会话内存维护守护）
+# memtonic.sh —— RMG MemTonic v1.4.2（SM-S9180 临时 Root 会话内存维护守护）
 #
 # 设计保证：
 #   * 不杀进程、不冻结、不打断任何后台服务（风暴护栏只调 nice，不动其他）；
