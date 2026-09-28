@@ -28,6 +28,10 @@
 #   * storm_end 增加 scan_ms/restore_ms 计时，归因窗口超限（实测 480s 上限
 #     被突破至 619s）。
 #
+# v1.4.2 变更（2026-09-28 rollback_staged_install 硬重启事故驱动）：
+#   * 守护启动时清理跨重启残留的 STORM_FLAG——硬重启若发生在窗口进行中，
+#     标志目录残留会让新守护把每小时维护无限期 deferred（实测）。
+#
 # 用法：
 #   sh memtonic.sh            守护模式（由 service.sh 拉起，通常不需要手动执行）
 #   sh memtonic.sh once       立即执行一次全套维护（风暴期自动拒绝）
@@ -150,9 +154,14 @@ esac
 
 # ---- 守护模式 ----
 echo "$$:$(pid_starttime $$)" > "$PIDF"
-logx E "event=start ver=1.4.1 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
+logx E "event=start ver=1.4.2 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
 # 防御闭环：上次会话若在窗口中途死亡，先补还原再开始
 storm_restore_pending session_start
+# v1.4.2（真实事故驱动）：硬重启时窗口进行中 → STORM_FLAG 在 /data 上跨重启残留
+# → 新守护误判"窗口活动中"，每小时维护被 maintenance_deferred 无限期压制
+# （2026-09-28 14:36 rollback_staged_install 硬重启实测）。守护启动点旧护栏必已死，
+# 此处清理无竞态。
+rm -rf "$STORM_FLAG" 2>/dev/null
 
 # 护栏子进程：独立外部脚本（mksh 后台化函数会瞬时死亡，实测教训）
 nohup sh "$MODDIR/scripts/storm_guard.sh" >/dev/null 2>&1 &
