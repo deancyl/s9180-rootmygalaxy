@@ -80,6 +80,11 @@ SHA256 : 17a88b2ed053bc1e54439a841b744bb2ee10f4ab90492ad431827db1f390b457
 s9180-rootmygalaxy/
 ├── README.md                                    ← 本文件
 ├── LICENSE                                      ← GPL-3.0（KernelSU 衍生代码）
+├── modules/
+│   └── rmg_memtonic/                            ← MemTonic 内存维护模块（v1.4.0）
+│       启动风暴护栏 + 息屏内存维护：软重启期给桌面让路、对新增应用削峰、
+│       白名单豁免、结构化日志；详见 modules/rmg_memtonic/README.md
+├── docs/progress/                               ← 开发进度记录（脱敏）
 ├── patch/
 │   └── KernelSU-v3.3.0-samsung-kdp-rkp-defex.patch
 │       核心成果：将 Samsung KDP/RKP/DEFEX 内核加固适配从 v3.2.5
