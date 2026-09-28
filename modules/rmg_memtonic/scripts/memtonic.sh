@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# memtonic.sh —— RMG MemTonic v1.4.0（SM-S9180 临时 Root 会话内存维护守护）
+# memtonic.sh —— RMG MemTonic v1.4.1（SM-S9180 临时 Root 会话内存维护守护）
 #
 # 设计保证：
 #   * 不杀进程、不冻结、不打断任何后台服务（风暴护栏只调 nice，不动其他）；
@@ -19,7 +19,7 @@
 #     E/A/W/X 同步镜像 logcat（tag MemTonic，无 root 时也可诊断）。
 #   * 自我负担核算：快照记录自身累计 CPU 时间（self_cpu_ms）。
 #
-# v1.4.0 变更（2026-09-28 两次真实软重启 16 窗日志实证驱动）：
+# v1.4.1 变更（2026-09-28 两次真实软重启 16 窗日志实证驱动）：
 #   * 修复风暴窗口级联重触发：storm_restore_pending 的全局变量 cur 改名 r_cur，
 #     且护栏主循环改为窗口前先固化 base（双重保险）——此前同一 sspid 会连续
 #     重开 4-11 轮窗口；
@@ -150,7 +150,7 @@ esac
 
 # ---- 守护模式 ----
 echo "$$:$(pid_starttime $$)" > "$PIDF"
-logx E "event=start ver=1.4.0 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
+logx E "event=start ver=1.4.1 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
 # 防御闭环：上次会话若在窗口中途死亡，先补还原再开始
 storm_restore_pending session_start
 

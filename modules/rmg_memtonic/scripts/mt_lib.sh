@@ -33,7 +33,7 @@ LAUNCHER_NICE=-4
 LAUNCHER_PKG=com.sec.android.app.launcher
 # 白名单：GKD、NoActive、Scene、Brevent、Rikka 等用户明确要保的服务
 # （前缀匹配；root/system 进程本就被 uid 过滤排除，无需列在这里）
-# v1.4.0 补充（真实软重启 01:00 窗口实证波及）：com.catalinagroup.（HK 通话录音
+# v1.4.1 补充（真实软重启 01:00 窗口实证波及）：com.catalinagroup.（HK 通话录音
 # 及其 helper）、com.nutomic.（syncthing）、com.wangc.（记账）——均被风暴削峰过
 WHITELIST_PKGS="li.songe.gkd cn.myflv.noactive com.omarea me.piebridge.brevent rikka. com.catalinagroup. com.nutomic. com.wangc."
 
@@ -120,7 +120,7 @@ is_app_uid() {
 nice_of() { awk '{print $19}' /proc/$1/stat 2>/dev/null; }
 
 # now_ms：毫秒时间戳（/proc/uptime 小数点后两位，秒级 date 不够用）
-# v1.4.0 新增：storm_end 记录 scan_ms/restore_ms，归因窗口超限（实测 480 上限被
+# v1.4.1 新增：storm_end 记录 scan_ms/restore_ms，归因窗口超限（实测 480 上限被
 # 突破至 619s——扫描/还原未分别计时，无法归因）
 now_ms() { awk '{printf "%d", $1*1000}' /proc/uptime 2>/dev/null; }
 
@@ -171,7 +171,7 @@ storm_restore_pending() {
       skip=$((skip+1)); continue
     fi
     case "$ap" in ''|*[!0-9-]*) continue;; esac
-    # v1.4.0：变量改名 r_cur——曾用名 cur 是全局变量，窗口结束还原后会覆盖
+    # v1.4.1：变量改名 r_cur——曾用名 cur 是全局变量，窗口结束还原后会覆盖
     # 护栏主循环的 cur，导致 base=$cur 存入 nice 值而非 system_server PID，
     # 同一 sspid 级联重开 4-11 轮风暴窗口（2026-09-28 两次真实软重启实证 16 窗；
     # 沙箱 mt_curtest.sh CASE3 实证覆盖）。护栏主循环同时已改为窗口前先存 base。
@@ -233,7 +233,7 @@ storm_window() {
         done_pids="$done_pids$pid "; continue
       fi
       if in_whitelist "$pkg"; then
-        # v1.4.0：白名单跳过留痕（S 级仅写文件，不刷 logcat）——生产日志此前
+        # v1.4.1：白名单跳过留痕（S 级仅写文件，不刷 logcat）——生产日志此前
         # 无法区分"被白名单保护"与"恰好未出现"，保护机制不可观测
         logx S "act=whitelist_skip pid=$pid pkg=$pkg"
         done_pids="$done_pids$pid "; continue

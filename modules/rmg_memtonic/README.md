@@ -1,10 +1,10 @@
 # RMG MemTonic —— SM-S9180 临时 Root 会话内存维护模块
 
-- 模块 ID：`rmg_memtonic` ｜ 版本：v1.4.0 ｜ 适用：Galaxy S23 Ultra（SM-S9180，dm3q）KernelSU 临时 Root（late-load）方案
+- 模块 ID：`rmg_memtonic` ｜ 版本：v1.4.1 ｜ 适用：Galaxy S23 Ultra（SM-S9180，dm3q）KernelSU 临时 Root（late-load）方案
 
 ## 版本历史
 
-- **v1.4.0（2026-09-28，真实软重启 16 窗日志实证驱动）**：
+- **v1.4.1（2026-09-28，真实软重启 16 窗日志实证驱动）**：
   1. 修复风暴窗口级联重触发——`storm_restore_pending` 的全局变量 `cur` 改名 `r_cur`，护栏主循环改为窗口前先固化 `base`（双重保险）。此前同一 sspid 会连续重开 4-11 轮窗口（01:00 软重启 5 轮、07:40 软重启 11 轮，共 16 窗 vs 应有 2 窗；沙箱 mt_curtest 实证覆盖机制）。
   2. 白名单补充 `com.catalinagroup.`（HK 通话录音）/ `com.nutomic.`（syncthing）/ `com.wangc.`（记账）——真实窗口日志实证三者曾被削峰（还原 ok / failed=0，但违反"不打断后台服务"意图）；同时新增 `whitelist_skip` 留痕日志（S 级仅写文件），保护机制从不可观测变为可审计。
   3. `storm_end` 增加 `scan_ms` / `restore_ms` 计时——480s 窗口上限实测被突破至 619s，此前的归因（扫描慢 vs 还原数千线程）无数据支撑，现在可归因。

@@ -81,7 +81,7 @@ s9180-rootmygalaxy/
 ├── README.md                                    ← 本文件
 ├── LICENSE                                      ← GPL-3.0（KernelSU 衍生代码）
 ├── modules/
-│   └── rmg_memtonic/                            ← MemTonic 内存维护模块（v1.4.0）
+│   └── rmg_memtonic/                            ← MemTonic 内存维护模块（v1.4.1）
 │       启动风暴护栏 + 息屏内存维护：软重启期给桌面让路、对新增应用削峰、
 │       白名单豁免、结构化日志；详见 modules/rmg_memtonic/README.md
 ├── docs/progress/                               ← 开发进度记录（脱敏）

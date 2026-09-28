@@ -1,6 +1,6 @@
 id=rmg_memtonic
 name=RMG MemTonic 内存维护
-version=v1.4.0
+version=v1.4.1
 versionCode=6
 author=deanc
-description=SM-S9180 临时 Root 会话内存维护 v1.4.0：①启动风暴护栏——检测 system_server 重启/新生，8 分钟窗口内给桌面让路（全线程 renice -4）并对窗口内新启动的应用进程削峰（renice +5，仅限 uid 应用、白名单与前台焦点豁免），窗口结束逐一还原，期间禁止维护动作；②息屏时每 4 小时内核内存压实，可用内存不足时条件性丢弃干净页缓存；③结构化日志（E/A/W/X/S 五级，logcat 镜像，自我 CPU 核算）。v1.4.0：修复风暴窗口级联重触发（全局变量污染）、白名单补充通话录音/syncthing/记账、storm_end 增加扫描/还原计时。不杀进程、不冻结应用、无挂载、不改 zram 参数、无 boot 阶段脚本，重启后随 root 会话自动恢复。
+description=SM-S9180 临时 Root 会话内存维护 v1.4.1：①启动风暴护栏——检测 system_server 重启/新生，8 分钟窗口内给桌面让路（全线程 renice -4）并对窗口内新启动的应用进程削峰（renice +5，仅限 uid 应用、白名单与前台焦点豁免），窗口结束逐一还原，期间禁止维护动作；②息屏时每 4 小时内核内存压实，可用内存不足时条件性丢弃干净页缓存；③结构化日志（E/A/W/X/S 五级，logcat 镜像，自我 CPU 核算）。v1.4.1：修复风暴窗口级联重触发（全局变量污染）、白名单补充通话录音/syncthing/记账、storm_end 增加扫描/还原计时。不杀进程、不冻结应用、无挂载、不改 zram 参数、无 boot 阶段脚本，重启后随 root 会话自动恢复。

@@ -1,0 +1,71 @@
+=== 环境预检 ===
+env|launcher_pid=25715 pre_nice=0 psi_cpu=2.74% psi_mem=0.00%
+env|daemon_pidfile=11925:765179 guard_pidfile=11935
+env|guard_alive=yes
+=== R 系列：storm_window 机制 ×5 ===
+R1|A1_flag_mid|PASS|yes
+R1|A2_launcher_nice_mid|FAIL|expect=-4 actual=0
+R1|A3_rlst_dirty_mid|FAIL|expect=dirty actual=clean
+R1|A4_once_refused_rc|PASS|1
+R1|A5_flag_cleared|FAIL|expect=no actual=yes
+R1|A6_launcher_restored|FAIL|expect=0 actual=-10
+R1|A7_rlst_clean_post|PASS|clean
+R1|A8_log_storm_events|PASS|yes
+R2|A1_flag_mid|PASS|yes
+R2|A2_launcher_nice_mid|FAIL|expect=-4 actual=-10
+R2|A3_rlst_dirty_mid|FAIL|expect=dirty actual=clean
+R2|A4_once_refused_rc|PASS|1
+R2|A5_flag_cleared|FAIL|expect=no actual=yes
+R2|A6_launcher_restored|PASS|-10
+R2|A7_rlst_clean_post|PASS|clean
+R2|A8_log_storm_events|PASS|yes
+R3|A1_flag_mid|PASS|yes
+R3|A2_launcher_nice_mid|FAIL|expect=-4 actual=-10
+R3|A3_rlst_dirty_mid|FAIL|expect=dirty actual=clean
+R3|A4_once_refused_rc|PASS|1
+R3|A5_flag_cleared|PASS|no
+R3|A6_launcher_restored|PASS|-10
+R3|A7_rlst_clean_post|PASS|clean
+R3|A8_log_storm_events|PASS|yes
+R4|A1_flag_mid|PASS|yes
+R4|A2_launcher_nice_mid|FAIL|expect=-4 actual=-10
+R4|A3_rlst_dirty_mid|FAIL|expect=dirty actual=clean
+R4|A4_once_refused_rc|PASS|1
+R4|A5_flag_cleared|FAIL|expect=no actual=yes
+R4|A6_launcher_restored|PASS|-10
+R4|A7_rlst_clean_post|FAIL|expect=clean actual=dirty
+R4|A8_log_storm_events|PASS|yes
+R5|A1_flag_mid|FAIL|expect=yes actual=no
+R5|A2_launcher_nice_mid|FAIL|expect=-4 actual=-10
+R5|A3_rlst_dirty_mid|FAIL|expect=dirty actual=clean
+R5|A4_once_refused_rc|FAIL|expect=1 actual=0
+R5|A5_flag_cleared|PASS|no
+R5|A6_launcher_restored|PASS|-10
+R5|A7_rlst_clean_post|PASS|clean
+R5|A8_log_storm_events|PASS|yes
+=== M 系列：维护 once ×3 ===
+M1|B1_once_rc|PASS|0
+M1|B2_compact_logged|PASS|yes
+M1|B3_avail_delta|INFO|3864092 -> 3857248 (delta -6844KB)
+M2|B1_once_rc|PASS|0
+M2|B2_compact_logged|PASS|yes
+M2|B3_avail_delta|INFO|3856240 -> 3836864 (delta -19376KB)
+M3|B1_once_rc|PASS|0
+M3|B2_compact_logged|PASS|yes
+M3|B3_avail_delta|INFO|3835856 -> 3828204 (delta -7652KB)
+=== G 系列：日志轮转 ×1 ===
+G1|rotation_size|PASS|final=149025 (<300KB)
+G2|rotation_tail_kept|PASS
+G3|log_restored|INFO|16460bytes
+=== L 系列：生命周期 ×2 ===
+L1|C1_daemon_stopped|FAIL|expect=gone actual=alive
+L1|C2_daemon_restarted|PASS|yes
+L1|C3_guard_restarted|PASS|yes
+L2|C1_daemon_stopped|FAIL|expect=gone actual=alive
+L2|C2_daemon_restarted|PASS|yes
+L2|C3_guard_restarted|PASS|yes
+=== D 系列：触发检测算术 ×1 ===
+D1|fresh_age_calc|PASS|age=4485s(>180,待命判定正确)
+D2|no_false_storm|PASS|无误触发
+=== 汇总 ===
+TOTAL|PASS=33 FAIL=19
