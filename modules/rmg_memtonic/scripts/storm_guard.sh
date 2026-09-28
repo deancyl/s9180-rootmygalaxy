@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# storm_guard.sh —— RMG MemTonic 启动风暴护栏子进程（v1.4.2）
+# storm_guard.sh —— RMG MemTonic 启动风暴护栏子进程（v1.4.3）
 # 由 memtonic.sh 守护以 nohup 外部脚本方式拉起（mksh 后台化函数会瞬时死亡，实测）。
 # 生命周期：随守护进程生死（$PPID = 守护 pid，探活失败则还原并退出）。
 # 职责：

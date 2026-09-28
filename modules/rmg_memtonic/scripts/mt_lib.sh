@@ -1,7 +1,14 @@
 #!/system/bin/sh
-# mt_lib.sh —— RMG MemTonic 公共库（v1.3.0）
+# mt_lib.sh —— RMG MemTonic 公共库（v1.4.3）
 # 仅供 memtonic.sh（守护主进程）与 storm_guard.sh（护栏子进程）source 使用。
 # 本文件不包含任何顶层执行语句——被直接执行时应立即退出。
+#
+# v1.4.3 变更（2026-09-28 软重启终验数据驱动，纯观测/留痕，零行为变化）：
+#   * renice 口径显式化：app_renice 单位=进程，还原清单单位=线程（tid）。
+#     终验实测 app_renice=192 vs changed_3rd_party=618 曾被误读为计数矛盾，
+#     实为 192 进程 × ~19 线程 ≈ 3646 tid（ok 2614 + chg 618 + skip 514 账目吻合）。
+#     新增 reniced_tid 计数器与 unit=tid 标注，restore 前快照明细供打击面分析。
+#     该明细是 v1.5.0 restore 增量优化的输入数据。
 #
 # 结构说明（v1.3.0 重构教训）：Android 16 的 mksh 后台化"shell 函数"会瞬时死亡
 # （实测矩阵：直接子壳 & 可靠，函数 & 必死），因此护栏必须是独立外部脚本；
@@ -141,6 +148,8 @@ focused_pkg() {
 # renice_tree <pid> <目标nice> <pkg> <仅限nice0:0|1>
 # 遍历进程全部线程（nice 粒度是线程而非进程组），逐 tid 设置并记录还原清单。
 # renice 失败静默跳过该 tid（不重试、不刷日志）。
+# v1.4.3：成功 renice 时累加全局计数器 reniced_tid（窗口开始时清零），
+# storm_end 输出该值——与 app_renice（进程口径）、还原统计（tid 口径）对账。
 renice_tree() {
   pid=$1; tn=$2; pkg=$3; only0=$4
   for t in /proc/$pid/task/*; do
@@ -154,6 +163,7 @@ renice_tree() {
     if renice -n $((tn - on)) -p "$tid" >/dev/null 2>&1; then
       # 格式：tid 原 nice 我们设置的值 包名（四字段，还原时校验第三字段）
       echo "$tid $on $tn $pkg" >> "$RLST" 2>/dev/null
+      reniced_tid=$((reniced_tid + 1))
     fi
   done
 }
@@ -164,6 +174,10 @@ renice_tree() {
 #（压力测试 run1 实测发现 launcher 主线程会被系统动态调到 -10）
 storm_restore_pending() {
   [ -s "$RLST" ] || return 0
+  # v1.4.3：还原前快照明细（tid 原nice 目标nice 包名）到 run/ 供打击面分析——
+  # 这是 v1.5.0 restore 增量优化（终验实证 restore 占窗口 25% 时间）的输入数据。
+  # run/ 为 700 root 私有目录，不含隐私内容仅含包名与 nice 值。
+  cp "$RLST" "$RUN/renice_detail_last.log" 2>/dev/null
   ok=0; skip=0; fail=0; chg=0
   while read -r tid on ap pkg; do
     case "$tid" in ''|*[!0-9]*) continue;; esac
@@ -189,7 +203,9 @@ storm_restore_pending() {
     fi
   done < "$RLST"
   rm -f "$RLST" 2>/dev/null
-  logx A "act=restore reason=$1 ok=$ok skipped_exit=$skip changed_3rd_party=$chg failed=$fail"
+  # v1.4.3：显式标注 unit=tid——本行四个统计均为线程口径，与 storm_end 的
+  # app_renice（进程口径）/reniced_tid（线程口径）区分，避免再次误读
+  logx A "act=restore reason=$1 ok=$ok skipped_exit=$skip changed_3rd_party=$chg failed=$fail unit=tid"
 }
 
 # storm_window <触发原因>：护栏窗口主体（在护栏子进程内运行）
@@ -201,6 +217,7 @@ storm_window() {
   : > "$RLST" 2>/dev/null
   end=$((t0 + STORM_WINDOW))
   n_app=0; n_launcher=0
+  reniced_tid=0   # v1.4.3：窗口内成功 renice 的线程总数（tid 口径，含 launcher）
   # 关键：窗口开启瞬间把所有【预存】进程记入已处理名单——护栏只对窗口内
   # 新启动的进程动手（否则 SystemUI/GMS 等常驻应用会在第一轮被误削峰）
   done_pids=" "
@@ -252,7 +269,9 @@ storm_window() {
   storm_restore_pending storm_end
   restore_ms=$(( $(now_ms) - rs0 ))
   rm -rf "$STORM_FLAG" 2>/dev/null
-  logx E "event=storm_end reason=$reason duration=$(( $(date +%s) - t0 )) app_renice=$n_app launcher_boost=$n_launcher psi_exit=$([ "$psi_low" -ge 3 ] && echo yes || echo no) scan_ms=${last_scan_ms:-NA} restore_ms=${restore_ms:-NA}"
+  # v1.4.3：reniced_tid=线程口径总 renice 数，用于与还原统计（unit=tid）对账；
+  # app_renice 仍为进程口径（与历史数据可比）
+  logx E "event=storm_end reason=$reason duration=$(( $(date +%s) - t0 )) app_renice=$n_app launcher_boost=$n_launcher reniced_tid=$reniced_tid psi_exit=$([ "$psi_low" -ge 3 ] && echo yes || echo no) scan_ms=${last_scan_ms:-NA} restore_ms=${restore_ms:-NA}"
 }
 
 # 直接执行本库文件时退出（防止误运行）

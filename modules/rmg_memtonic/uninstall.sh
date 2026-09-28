@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# uninstall.sh —— RMG MemTonic v1.4.2 卸载清理
+# uninstall.sh —— RMG MemTonic v1.4.3 卸载清理
 # 停止守护与护栏，还原未处理的 renice 清单，删除运行时文件，
 # 并清理 v1.0.0 时代遗留在 /data/local/tmp 的文件。
 #

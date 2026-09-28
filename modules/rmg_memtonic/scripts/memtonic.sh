@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# memtonic.sh —— RMG MemTonic v1.4.2（SM-S9180 临时 Root 会话内存维护守护）
+# memtonic.sh —— RMG MemTonic v1.4.3（SM-S9180 临时 Root 会话内存维护守护）
 #
 # 设计保证：
 #   * 不杀进程、不冻结、不打断任何后台服务（风暴护栏只调 nice，不动其他）；
@@ -31,6 +31,15 @@
 # v1.4.2 变更（2026-09-28 rollback_staged_install 硬重启事故驱动）：
 #   * 守护启动时清理跨重启残留的 STORM_FLAG——硬重启若发生在窗口进行中，
 #     标志目录残留会让新守护把每小时维护无限期 deferred（实测）。
+#
+# v1.4.3 变更（2026-09-28 软重启终验 5/5 PASS 后的观测增强，纯留痕零行为变化）：
+#   * renice 口径显式化：新增 reniced_tid（线程口径）计数，restore 统计行加
+#     unit=tid 标注——终验 app_renice=192（进程）vs changed_3rd_party=618（线程）
+#     曾被误读为计数矛盾，实为 192 进程 × ~19 线程的口径差；
+#   * 还原前快照明细 run/renice_detail_last.log（tid 原nice 目标 包名），
+#     为 v1.5.0 restore 增量优化提供打击面数据。
+#   * 三条硬原则不变：不变砖（无分区写入）、不引发重启（无任何 reboot 路径）、
+#     可验证可回滚（改动最小 diff + 全量结构化日志）。
 #
 # 用法：
 #   sh memtonic.sh            守护模式（由 service.sh 拉起，通常不需要手动执行）
@@ -154,7 +163,7 @@ esac
 
 # ---- 守护模式 ----
 echo "$$:$(pid_starttime $$)" > "$PIDF"
-logx E "event=start ver=1.4.2 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
+logx E "event=start ver=1.4.3 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
 # 防御闭环：上次会话若在窗口中途死亡，先补还原再开始
 storm_restore_pending session_start
 # v1.4.2（真实事故驱动）：硬重启时窗口进行中 → STORM_FLAG 在 /data 上跨重启残留
