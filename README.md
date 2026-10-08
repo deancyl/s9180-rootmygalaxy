@@ -16,6 +16,34 @@
 
 两个版本**exploit 链路完全相同**（逐字节一致），区别仅在于 late-load 的 KernelSU 版本。
 
+## 🧩 MemTonic 内存模块 Releases
+
+MemTonic 是**配套本仓库临时 root 环境使用**的 KernelSU 模块：软重启（root 会话存活）期间做内存与异常守护，root 失效后自动停止，不做任何持久化改动。
+
+> ⚠️ 模块依赖临时 root 会话才能加载，因此每个 MemTonic release 都**附带前置 APK**（`rootmygalaxy-0.2.36-ksu330.apk`）。请先用 APK 完成一次临时 root，再刷入模块 zip。
+
+| MemTonic | 说明 | 适用人群 |
+|---|---|---|
+| [`memtonic-v1.9.12`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.12) | **当前最新**：Rollback 地雷自动排除哨兵（防软重启被升级为完整重启而丢 root）、sspid 门闩重置、启动环境基线、7 脚本全量 ARG_MAX 审计修复 | **新装首选** |
+| [`memtonic-v1.9.6`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.6) | 修复 uninstall 盲杀防变砖、`alive()` 逻辑、vk_injector 多 PID bug | 需要 v1.9.1~1.9.5 网络救援特性者 |
+| [`memtonic-v1.9.5`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.5) | 护盾日志版本号与各脚本版本声明同步；CPU 护栏死线程清理的内存泄漏修复 | 同上 |
+| [`memtonic-v1.9.4`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.4) | 移除无效 updateJson、版本号一致性、绝对路径解析修复、CPU 护栏死线程防泄漏 | 同上 |
+| [`memtonic-v1.9.3`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.3) | 修复 `start` 无参启动被拦截、移除硬编码路径（提升可移植性） | 同上 |
+| [`memtonic-v1.9.2`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.2) | 移除全局 IPv4 TCP sysctl 注入（避免整机网络副作用与待机耗电） | 不想改系统网络参数者 |
+| [`memtonic-v1.9.1`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.1) | 网络假死底层救援（TCP Keepalive / FIN 快速回收）、MTU 碎片探测、VPN 进程豁免防降权 | 仍需网络急救特性者 |
+| [`memtonic-v1.4.3`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.4.3) | renice 口径显式化（线程级 tid 计数 + 打击面明细快照），纯观测增强 | 仅需启动风暴护栏 |
+| [`memtonic-v1.3.0`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.3.0) | 早期版本：启动风暴护栏 + 息屏内存压实 | 历史存档 |
+
+> **版本号缺口说明**：`v1.9.7` ~ `v1.9.11` 开发期未做实体归档（同一工作目录迭代覆盖），**没有可安装包**，因此不提供 release；这些版本的完整变更记录见 v1.9.12 的 `CHANGELOG.md`。
+
+**安装步骤**（KernelSU → 模块 → 刷入 zip；或直接用 KernelSU 管理器安装 zip）：
+
+1. 用本仓库 Release 的 APK 完成一次临时 root（KSU 管理器会随之安装）
+2. KernelSU 管理器 →「模块」→ 安装模块 → 选择 `rmg_memtonic-vX.Y.Z.zip`
+3. 重启框架（KernelSU 软重启）后生效，状态见 `sh /data/adb/modules/rmg_memtonic/scripts/memtonic.sh status`
+
+**升级**：`service.sh` 不重跑软重启（会丢 root），请用 `stop` + `start` 重启模块守护使新代码生效。
+
 ## ✅ 适用范围（务必核对）
 
 | 项目 | 要求 |
@@ -81,9 +109,10 @@ s9180-rootmygalaxy/
 ├── README.md                                    ← 本文件
 ├── LICENSE                                      ← GPL-3.0（KernelSU 衍生代码）
 ├── modules/
-│   └── rmg_memtonic/                            ← MemTonic 内存维护模块（v1.4.1）
-│       启动风暴护栏 + 息屏内存维护：软重启期给桌面让路、对新增应用削峰、
-│       白名单豁免、结构化日志；详见 modules/rmg_memtonic/README.md
+│   └── rmg_memtonic/                            ← MemTonic 内存守护模块（当前主干 v1.9.12）
+│       启动风暴护栏 + CPU 失常护栏 + 前台护盾 + Camera/Screenshot Sentinel +
+│       Rollback 地雷排除哨兵 + 结构化日志；版本历史见上方 Releases，
+│       完整变更记录见 modules/rmg_memtonic/CHANGELOG.md
 ├── docs/progress/                               ← 开发进度记录（脱敏）
 ├── patch/
 │   └── KernelSU-v3.3.0-samsung-kdp-rkp-defex.patch

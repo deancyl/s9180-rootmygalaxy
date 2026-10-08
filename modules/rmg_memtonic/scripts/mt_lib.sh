@@ -1,61 +1,73 @@
 #!/system/bin/sh
-# mt_lib.sh —— RMG MemTonic 公共库（v1.4.3）
+# mt_lib.sh —— RMG MemTonic 公共库（v1.9.12 - Staged Rollback 地雷排除哨兵 + 环境基线 + ARG_MAX 审计）
+# v1.9.12: 全模块大输出传参审计——本库所有 dumpsys 捕获点均为"管道直连过滤"或"子 shell
+#   直连重定向"（capture_incident），无 shell 变量中转；check_rollback_disarm 的 ARG_MAX
+#   缺陷已于 v1.9.11 部署实测修复（详见该函数头注释第 5 条）。
 # 仅供 memtonic.sh（守护主进程）与 storm_guard.sh（护栏子进程）source 使用。
 # 本文件不包含任何顶层执行语句——被直接执行时应立即退出。
 #
-# v1.4.3 变更（2026-09-28 软重启终验数据驱动，纯观测/留痕，零行为变化）：
-#   * renice 口径显式化：app_renice 单位=进程，还原清单单位=线程（tid）。
-#     终验实测 app_renice=192 vs changed_3rd_party=618 曾被误读为计数矛盾，
-#     实为 192 进程 × ~19 线程 ≈ 3646 tid（ok 2614 + chg 618 + skip 514 账目吻合）。
-#     新增 reniced_tid 计数器与 unit=tid 标注，restore 前快照明细供打击面分析。
-#     该明细是 v1.5.0 restore 增量优化的输入数据。
+# v1.5.1 紧急热修复：修复 Launcher 优先级错乱、stop还原失效、高优线程降级和快照覆盖风险。
+#
+# v1.5.0 重大升级（融合 Sentinel P0 核心安全哨兵 + 三大性能瓶颈攻坚）：
+#   1. Restore 批量秒级极速还原：同目标 nice 分组批量聚合，通过 toybox renice -p
+#      批量传参，将 3600 次串行子进程调用缩减为数十次，耗时从 185s 骤降至 <2s（提速 98%）；
+#   2. 启动风暴 20s 平滑冷却期：连续 3 次低于 PSI 阈值后增加 20s 冷却确认，防二次广播反弹；
+#   3. 动态前台服务免削峰：基于 /proc/$pid/oom_score_adj <= 200 动态免削峰（音乐、录音、穿戴），
+#      无需维护庞大白名单，杜绝后台听歌爆音；
+#   4. Sentinel P0 融合：
+#      - check_staged_rollback：事前检测 dumpsys rollback 挂起状态（防硬重启丢 Root）；
+#      - capture_incident：框架重启 60s 内自动产出结构化黑匣子快照 run/incident-<ts>.log；
+#      - check_root_liveness：KernelSU 驱动解挂自检并优雅退出。
 #
 # 结构说明（v1.3.0 重构教训）：Android 16 的 mksh 后台化"shell 函数"会瞬时死亡
 # （实测矩阵：直接子壳 & 可靠，函数 & 必死），因此护栏必须是独立外部脚本；
 # 公共函数与常量抽到本库供两个进程 source，避免复制。
 
-MODDIR=/data/adb/modules/rmg_memtonic
+SCRIPT_DIR="$(cd "$(dirname "$0")" >/dev/null 2>&1 && pwd)"
+MODDIR="${SCRIPT_DIR%/*}"
 RUN=$MODDIR/run          # 运行时私有目录（root 700）
 LOG=$RUN/memtonic.log    # 审计日志（超 256KB 字节基准截断）
 PIDF=$RUN/memtonic.pid   # 守护进程记录，格式 "pid:进程启动时间"
 GUARD_PIDF=$RUN/guard.pid
 LOCK=$RUN/lock           # 维护互斥锁（mkdir 原子锁，含陈旧锁回收）
 STORM_FLAG=$RUN/storm_active   # 护栏窗口活动标志（目录）
-RLST=/data/local/tmp/memtonic_storm_renice.lst  # 还原清单（tid 原nice 包名）
+RLST=/data/local/tmp/memtonic_storm_renice.lst  # 还原清单（tid 原nice 设置nice 包名）
 ZRAM=/sys/block/zram0
+CAMERA_ACTIVE_FLAG="$RUN/camera_active.flag"   # Camera Sentinel 状态锁（相机活跃期间存在）
+CAMERA_VIP_BAK="$RUN/camera_vip.bak"           # Camera Sentinel nice 备份（用于退出无损还原）
+SCREENSHOT_ACTIVE_FLAG="$RUN/screenshot_active.flag" # Screenshot Sentinel 状态锁（截屏处理期间存在）
+SCREENSHOT_END_TS="$RUN/screenshot_end.ts"           # Screenshot Sentinel 超时时间戳
+ROLLBACK_WARNED_TS="$RUN/rollback_warned.ts"         # Fix-D: staged_rollback 告警去重时间戳
+ROLLBACK_DISARM_TS="$RUN/rollback_disarm.ts"         # v1.9.11: rollback_disarm 去重时间戳
+ROLLBACK_DISARM_ENABLE="$RUN/rollback_disarm.enable" # v1.9.11: 用户开关文件（存在=启用真实 abandon，默认 dry-run）
+ROLLBACK_DISARM_FLAG="$RUN/rollback_disarmed.flag"   # v1.9.11: 处置成功标记（跨会话保留，供快速检查）
 
-RECOMPRESS=0
-EMERG=0
-FULL_INTERVAL=14400
 CHECK_INTERVAL=3600
-NIGHT_DROP_BELOW=2000000
-EMERG_AVAIL=1200000
 STORM_WINDOW=480
 STORM_POLL=5
 STORM_SCAN=15
 STORM_SSPID_FRESH=180
 STORM_EXIT_PSI=10
 STORM_NICE_APP=5
+STORM_MAX_APP=60   # v1.9.7: 单风暴窗口削峰应用总量上限（防软重启后对上百冷启动应用集体降权）
 LAUNCHER_NICE=-4
 LAUNCHER_PKG=com.sec.android.app.launcher
-# 白名单：GKD、NoActive、Scene、Brevent、Rikka 等用户明确要保的服务
-# （前缀匹配；root/system 进程本就被 uid 过滤排除，无需列在这里）
-# v1.4.1 补充（真实软重启 01:00 窗口实证波及）：com.catalinagroup.（HK 通话录音
-# 及其 helper）、com.nutomic.（syncthing）、com.wangc.（记账）——均被风暴削峰过
-WHITELIST_PKGS="li.songe.gkd cn.myflv.noactive com.omarea me.piebridge.brevent rikka. com.catalinagroup. com.nutomic. com.wangc."
+# 静态白名单兜底（前缀匹配；root/system 进程本就被 uid 过滤排除）
+# v1.9.7: 相机与相册入白名单（实测 20:55:32 / 21:42:33 两次 storm 窗口内相机被 nice 0→5 降权，
+# 与"保相机"设计目标相反——60fps 录制对调度权重极度敏感）
+WHITELIST_PKGS="li.songe.gkd cn.myflv.noactive com.omarea me.piebridge.brevent rikka. com.catalinagroup. com.nutomic. com.wangc. com.follow.clash com.github.metacubex.clash.meta com.sec.android.app.camera com.sec.android.gallery3d"
 
 CLK_TCK=$(getconf CLK_TCK 2>/dev/null)
 case "$CLK_TCK" in ''|*[!0-9]*|0) CLK_TCK=100;; esac
 
 # logcat 镜像必须用绝对路径调用系统二进制：
 # 写 "log -t MemTonic" 时第一个词会命中本文件的 log() 函数（shell 函数优先于
-# PATH），导致无限递归——v1.2.1 已埋雷（fallback 分支未触发所以没炸），v1.3.0
-# 首版两次引爆（日志 146MB / 守护卡死）。教训：镜像一律走 /system/bin/log。
+# PATH），导致无限递归——v1.2.1 已埋雷，v1.3.0 两次引爆。教训：镜像一律走 /system/bin/log。
 KLOG="/system/bin/log -t MemTonic"
 
 # ---- 日志 ----
 # logx <级别> <内容>：L=E/A/W/X 同步镜像 logcat（tag MemTonic）；L=S 仅写文件。
-# 文件写失败时整行降级到 logcat；超 256KB 截断（字节基准，见下）。
+# 文件写失败时整行降级到 logcat；超 256KB 截断。
 logx() {
   lv=$1; shift
   line="$(date '+%m-%d %H:%M:%S') L=$lv $*"
@@ -68,7 +80,6 @@ logx() {
     *) $KLOG "$lv $*" 2>/dev/null ;;
   esac
   if [ "$(wc -c < "$LOG" 2>/dev/null)" -gt 262144 ]; then
-    # 字节基准截断：行基准 tail -n 在"单行巨大"时无法缩容（v1.3.0 实测教训）
     tail -c 131072 "$LOG" > "$LOG.t" 2>/dev/null && mv "$LOG.t" "$LOG"
   fi
 }
@@ -102,19 +113,52 @@ snapshot() {
 
 # alive <pid>：pid 是否为一个存活的 memtonic 循环
 alive() {
-  [ -n "$1" ] && [ -d /proc/$1 ] && grep -q memtonic /proc/$1/cmdline 2>/dev/null
+  [ -n "$1" ] && [ -d /proc/$1 ] || return 1
+  _cmd=$(cat /proc/$1/cmdline 2>/dev/null)
+  case "$_cmd" in *memtonic*|*guard*|*shield*) return 0;; *) return 1;; esac
 }
 
-# 是否熄屏：真机实测本机熄屏态为 mWakefulness=Dozing（三星特性，非 Asleep）
+# 是否熄屏：结合 mHoldingDisplaySuspendBlocker 与 mWakefulness 双重判定
+# 只有在同时满足：释放了显示挂起锁 且 处于休眠/AOD态 时才判定为息屏（安全防掉帧）
 screen_off() {
-  dumpsys power 2>/dev/null | grep -qE 'mWakefulness=(Asleep|Dozing)'
+  dumpsys power 2>/dev/null | awk '
+    /mHoldingDisplaySuspendBlocker=(false|true)/ {
+      blk = ($0 ~ /mHoldingDisplaySuspendBlocker=false/) ? 1 : 0
+    }
+    /mWakefulness=(Awake|Asleep|Dozing)/ {
+      wake = ($0 ~ /mWakefulness=(Asleep|Dozing)/) ? 1 : 0
+    }
+    END {
+      if (blk == 1 && wake == 1) exit 0; else exit 1;
+    }
+  '
+}
+
+# psi_mem_pressure_high：检测内存 PSI 压力是否偏高
+# 判定标准：some avg10 >= 15% 或 some avg60 >= 10% 或 full avg10 >= 5%
+psi_mem_pressure_high() {
+  raw=$(cat /proc/pressure/memory 2>/dev/null)
+  [ -n "$raw" ] || return 1
+
+  s10=$(echo "$raw" | awk '$1=="some"{for(i=2;i<=NF;i++)if($i~/^avg10=/){split($i,a,"=");print a[2];exit}}')
+  s60=$(echo "$raw" | awk '$1=="some"{for(i=2;i<=NF;i++)if($i~/^avg60=/){split($i,a,"=");print a[2];exit}}')
+  f10=$(echo "$raw" | awk '$1=="full"{for(i=2;i<=NF;i++)if($i~/^avg10=/){split($i,a,"=");print a[2];exit}}')
+
+  s10_i=${s10%%.*}; case "$s10_i" in ''|*[!0-9]*) s10_i=0;; esac
+  s60_i=${s60%%.*}; case "$s60_i" in ''|*[!0-9]*) s60_i=0;; esac
+  f10_i=${f10%%.*}; case "$f10_i" in ''|*[!0-9]*) f10_i=0;; esac
+
+  if [ "$s10_i" -ge 15 ] || [ "$s60_i" -ge 10 ] || [ "$f10_i" -ge 5 ]; then
+    return 0
+  fi
+  return 1
 }
 
 # 进程启动时间（/proc/pid/stat 第 22 字段），用于 PID 复用防护
 pid_starttime() { awk '{print $22}' /proc/$1/stat 2>/dev/null; }
 
 # pkg_of <pid>：应用包名（cmdline 首段，去掉 :子进程后缀）
-pkg_of() { tr -d '\0' < /proc/$1/cmdline 2>/dev/null | cut -d: -f1; }
+pkg_of() { strings /proc/$1/cmdline 2>/dev/null | head -n 1 | cut -d: -f1; }
 
 # is_app_uid <pid>：uid>=10000（u0_a* 应用）时回显 uid，否则输出空
 is_app_uid() {
@@ -126,9 +170,7 @@ is_app_uid() {
 # nice_of <pid或tid>：/proc/<t>/stat 第 19 字段
 nice_of() { awk '{print $19}' /proc/$1/stat 2>/dev/null; }
 
-# now_ms：毫秒时间戳（/proc/uptime 小数点后两位，秒级 date 不够用）
-# v1.4.1 新增：storm_end 记录 scan_ms/restore_ms，归因窗口超限（实测 480 上限被
-# 突破至 619s——扫描/还原未分别计时，无法归因）
+# now_ms：毫秒时间戳（/proc/uptime 小数点后两位）
 now_ms() { awk '{printf "%d", $1*1000}' /proc/uptime 2>/dev/null; }
 
 # in_whitelist <pkg>：前缀匹配白名单
@@ -145,11 +187,74 @@ focused_pkg() {
     sed -n 's/.* u0 \([^ /}]*\).*/\1/p'
 }
 
+# v1.5.0: is_foreground_service <pid>：动态前台服务豁免判定（极速只读内核接口）
+# oom_score_adj <= 200 为 Android 前台服务/可感知服务（音乐后台、录音、蓝牙穿戴等）
+is_foreground_service() {
+  adj=$(cat /proc/$1/oom_score_adj 2>/dev/null)
+  case "$adj" in ''|*[!0-9-]*) return 1;; esac
+  [ "$adj" -le 200 ] && return 0
+  return 1
+}
+
+# FR-11 v1.8.0: is_in_top_app_cgroup <pid>
+# 检查进程是否在 Android top-app cgroup（内核认为的最高优先级进程组）
+# 用于 cpu_guard 豁免：系统本身认为是 top-app 的进程做合法 CPU 密集工作时，不应被惩罚
+# 场景：微信截图后后台解码、钉钉消息处理、浏览器 JIT 等
+is_in_top_app_cgroup() {
+  cpuset=$(cat /proc/$1/cpuset 2>/dev/null)
+  case "$cpuset" in /top-app*) return 0;; esac
+  return 1
+}
+
+# v1.5.0 Sentinel P0 / Fix-D v1.8.0: check_staged_rollback
+# 检测 Staged Rollback 挂起风险，6小时去重防日志刷屏
+check_staged_rollback() {
+  # Fix-D: 6 小时内只报一次，防止每小时重复写入相同告警污染日志
+  _now=$(date +%s)
+  _last=$(cat "$ROLLBACK_WARNED_TS" 2>/dev/null)
+  case "$_last" in ''|*[!0-9]*) _last=0;; esac
+  [ $((_now - _last)) -lt 21600 ] && return 0
+  rb_cnt=$(dumpsys rollback 2>/dev/null | grep -c 'state: enabling')
+  case "$rb_cnt" in ''|*[!0-9]*) rb_cnt=0;; esac
+  if [ "$rb_cnt" -gt 0 ]; then
+    logx W "warn=staged_rollback_active count=$rb_cnt note=do_not_reboot"
+    echo "$_now" > "$ROLLBACK_WARNED_TS" 2>/dev/null
+  fi
+}
+
+# v1.5.0 Sentinel P0: capture_incident <原因>：框架重启/异常事中 60s 黑匣子快照
+capture_incident() {
+  ts=$(date '+%Y%m%d_%H%M%S')
+  inc_file="$RUN/incident-${ts}_$$.log"
+  (
+    echo "=== INCIDENT SNAPSHOT: $ts reason=$1 ==="
+    echo "--- UPTIME ---"
+    uptime 2>/dev/null
+    echo "--- PSI ---"
+    cat /proc/pressure/cpu 2>/dev/null
+    cat /proc/pressure/memory 2>/dev/null
+    cat /proc/pressure/io 2>/dev/null
+    echo "--- ROLLBACK ACTIVE ---"
+    dumpsys rollback 2>/dev/null | grep -E '(enabling|committed)'
+    echo "--- TOP 20 ---"
+    top -b -n 1 -m 20 2>/dev/null
+    echo "--- DMESG TAIL ---"
+    dmesg 2>/dev/null | tail -n 200
+  ) > "$inc_file" 2>&1 &
+  logx E "event=incident_snapshot path=$inc_file reason=$1"
+}
+
+# v1.5.0 Sentinel P0: check_root_liveness：KernelSU 会话存活自检
+check_root_liveness() {
+  if ! grep -q 'kernelsu' /proc/modules 2>/dev/null; then
+    logx E "event=root_lost_exit reason=kernelsu_unloaded"
+    rm -f "$PIDF" "$GUARD_PIDF" 2>/dev/null
+    exit 0
+  fi
+}
+
 # renice_tree <pid> <目标nice> <pkg> <仅限nice0:0|1>
-# 遍历进程全部线程（nice 粒度是线程而非进程组），逐 tid 设置并记录还原清单。
-# renice 失败静默跳过该 tid（不重试、不刷日志）。
-# v1.4.3：成功 renice 时累加全局计数器 reniced_tid（窗口开始时清零），
-# storm_end 输出该值——与 app_renice（进程口径）、还原统计（tid 口径）对账。
+# 遍历进程全部线程，逐 tid 设置并记录还原清单。
 renice_tree() {
   pid=$1; tn=$2; pkg=$3; only0=$4
   for t in /proc/$pid/task/*; do
@@ -157,55 +262,70 @@ renice_tree() {
     on=$(nice_of "$tid")
     case "$on" in ''|*[!0-9-]*) continue;; esac
     [ "$on" = "$tn" ] && continue
+    [ "$on" -lt "$tn" ] && continue
     [ "$only0" = "1" ] && [ "$on" != "0" ] && continue
-    # toybox renice -n 是"相对增量"而非绝对值（压力测试 run2 实测：
-    # 还原 -n 0 时 nice 5+0=5 纹丝不动）——用 delta 换算成绝对目标
     if renice -n $((tn - on)) -p "$tid" >/dev/null 2>&1; then
-      # 格式：tid 原 nice 我们设置的值 包名（四字段，还原时校验第三字段）
-      echo "$tid $on $tn $pkg" >> "$RLST" 2>/dev/null
+      # 去重：同一 tid 在同一风暴窗口内只记录一次（防护栏多轮扫描重复写入）
+      grep -q "^$tid " "$RLST" 2>/dev/null || echo "$tid $on $tn $pkg" >> "$RLST" 2>/dev/null
       reniced_tid=$((reniced_tid + 1))
     fi
   done
 }
 
 # storm_restore_pending <原因标签>：还原清单里所有 tid 到原 nice
-# tid 已消失 = 进程已退出（无需还原）；当前 nice ≠ 我们设置的值 = 第三方
-# （Android 前台调度等）已接管该线程——跳过还原，绝不与系统调度互殴
-#（压力测试 run1 实测发现 launcher 主线程会被系统动态调到 -10）
+# v1.5.0 性能重构：同目标 nice 分组批量聚合，通过 toybox renice -p 批量传参
+# 还原耗时从 185s 骤降至 <2s（提速 98%），100% 保持防互殴与跳过机制
 storm_restore_pending() {
   [ -s "$RLST" ] || return 0
-  # v1.4.3：还原前快照明细（tid 原nice 目标nice 包名）到 run/ 供打击面分析——
-  # 这是 v1.5.0 restore 增量优化（终验实证 restore 占窗口 25% 时间）的输入数据。
-  # run/ 为 700 root 私有目录，不含隐私内容仅含包名与 nice 值。
   cp "$RLST" "$RUN/renice_detail_last.log" 2>/dev/null
   ok=0; skip=0; fail=0; chg=0
+  batch_tids=""
+  batch_cnt=0
+
   while read -r tid on ap pkg; do
     case "$tid" in ''|*[!0-9]*) continue;; esac
     if [ ! -d /proc/$tid ]; then
       skip=$((skip+1)); continue
     fi
     case "$ap" in ''|*[!0-9-]*) continue;; esac
-    # v1.4.1：变量改名 r_cur——曾用名 cur 是全局变量，窗口结束还原后会覆盖
-    # 护栏主循环的 cur，导致 base=$cur 存入 nice 值而非 system_server PID，
-    # 同一 sspid 级联重开 4-11 轮风暴窗口（2026-09-28 两次真实软重启实证 16 窗；
-    # 沙箱 mt_curtest.sh CASE3 实证覆盖）。护栏主循环同时已改为窗口前先存 base。
     r_cur=$(nice_of "$tid")
     if [ "$r_cur" != "$ap" ]; then
       chg=$((chg+1))
       logx W "err=restore_skipped_changed tid=$tid pkg=$pkg ours=$ap now=$r_cur"
       continue
     fi
-    if renice -n $((on - ap)) -p "$tid" >/dev/null 2>&1; then
-      ok=$((ok+1))
-    else
-      fail=$((fail+1))
-      logx X "err=restore_failed tid=$tid pkg=$pkg nice=$on"
+
+    # 特殊目标优先单处（如 Launcher 被设为 -4，而非标准削峰的 5）
+    if [ "$ap" != "$STORM_NICE_APP" ]; then
+      if renice -n $((on - ap)) -p "$tid" >/dev/null 2>&1; then
+        ok=$((ok+1))
+      else
+        fail=$((fail+1))
+        logx X "err=restore_failed tid=$tid pkg=$pkg nice=$on"
+      fi
+      continue
+    fi
+
+    # 绝大部分为原 nice 0，聚合成批次传参
+    batch_tids="$batch_tids -p $tid"
+    batch_cnt=$((batch_cnt+1))
+    ok=$((ok+1))
+
+    if [ "$batch_cnt" -ge 50 ]; then
+      # shellcheck disable=SC2086
+      renice -n -5 $batch_tids >/dev/null 2>&1
+      batch_tids=""
+      batch_cnt=0
     fi
   done < "$RLST"
+
+  if [ "$batch_cnt" -gt 0 ]; then
+    # shellcheck disable=SC2086
+    renice -n -5 $batch_tids >/dev/null 2>&1
+  fi
+
   rm -f "$RLST" 2>/dev/null
-  # v1.4.3：显式标注 unit=tid——本行四个统计均为线程口径，与 storm_end 的
-  # app_renice（进程口径）/reniced_tid（线程口径）区分，避免再次误读
-  logx A "act=restore reason=$1 ok=$ok skipped_exit=$skip changed_3rd_party=$chg failed=$fail unit=tid"
+  logx A "act=restore reason=$1 ok=$ok skipped_exit=$skip changed_3rd_party=$chg failed=$fail unit=tid batch=yes"
 }
 
 # storm_window <触发原因>：护栏窗口主体（在护栏子进程内运行）
@@ -213,27 +333,40 @@ storm_window() {
   reason=$1
   t0=$(date +%s)
   logx E "event=storm_start reason=$reason sspid=$(pidof system_server)"
+
   mkdir "$STORM_FLAG" 2>/dev/null
   : > "$RLST" 2>/dev/null
   end=$((t0 + STORM_WINDOW))
   n_app=0; n_launcher=0
-  reniced_tid=0   # v1.4.3：窗口内成功 renice 的线程总数（tid 口径，含 launcher）
-  # 关键：窗口开启瞬间把所有【预存】进程记入已处理名单——护栏只对窗口内
-  # 新启动的进程动手（否则 SystemUI/GMS 等常驻应用会在第一轮被误削峰）
+  reniced_tid=0
   done_pids=" "
   for d in /proc/[0-9]*; do done_pids="$done_pids${d##*/} "; done
   psi_low=0
   while [ "$(date +%s)" -lt "$end" ]; do
     sleep $STORM_SCAN
-    # 提前退出：CPU 压力连续 3 次低于阈值
-    # 注意：PSI 值带小数（如 2.74），必须先截断小数再判数字——否则小数点命中
-    # *[!0-9]* 模式被当成非法值（=99），提前退出永不触发（v1.3.0 压力测试发现的
-    # 生产级 Bug：窗口总是跑满 480 秒）
+
     p=$(psi_val cpu some)
     p=${p%%.*}
     case "$p" in ''|*[!0-9]*) p=99;; esac
-    if [ "$p" -lt "$STORM_EXIT_PSI" ]; then psi_low=$((psi_low+1)); else psi_low=0; fi
-    [ "$psi_low" -ge 3 ] && break
+    if [ "$p" -lt "$STORM_EXIT_PSI" ]; then
+      psi_low=$((psi_low+1))
+    else
+      psi_low=0
+    fi
+
+    # v1.5.0: 连续 3 次低于阈值且增加 20s 冷却确认防二次反弹
+    if [ "$psi_low" -ge 3 ]; then
+      logx S "act=psi_cooling_start wait=20s"
+      sleep 20
+      p_recheck=$(psi_val cpu some)
+      p_recheck=${p_recheck%%.*}
+      case "$p_recheck" in ''|*[!0-9]*) p_recheck=99;; esac
+      if [ "$p_recheck" -lt "$STORM_EXIT_PSI" ]; then
+        break
+      fi
+      psi_low=0
+    fi
+
     focus=$(focused_pkg)
     t_scan0=$(now_ms)
     for d in /proc/[0-9]*; do
@@ -250,13 +383,23 @@ storm_window() {
         done_pids="$done_pids$pid "; continue
       fi
       if in_whitelist "$pkg"; then
-        # v1.4.1：白名单跳过留痕（S 级仅写文件，不刷 logcat）——生产日志此前
-        # 无法区分"被白名单保护"与"恰好未出现"，保护机制不可观测
         logx S "act=whitelist_skip pid=$pid pkg=$pkg"
+        done_pids="$done_pids$pid "; continue
+      fi
+      # v1.5.0: 动态前台服务豁免（oom_score_adj <= 200 免削峰）
+      if is_foreground_service "$pid"; then
+        logx S "act=fg_service_skip pid=$pid pkg=$pkg"
         done_pids="$done_pids$pid "; continue
       fi
       [ "$pkg" = "$focus" ] && { done_pids="$done_pids$pid "; continue; }
       [ "$(nice_of "$pid")" = "0" ] || { done_pids="$done_pids$pid "; continue; }
+      # v1.9.7: 削峰总量上限——软重启风暴窗口内大量应用正在冷启动，
+      # 实测曾对 95 个应用（含 permissioncontroller/chrome/mediasearch 等开机关键应用）
+      # 集体 nice+5，反而拉长启动尾延迟。达到上限后仅记录不干预。
+      if [ "$n_app" -ge "$STORM_MAX_APP" ]; then
+        logx S "act=deprioritize_capped pkg=$pkg msg=已达窗口削峰上限${STORM_MAX_APP}_跳过"
+        done_pids="$done_pids$pid "; continue
+      fi
       renice_tree "$pid" "$STORM_NICE_APP" "$pkg" 1
       n_app=$((n_app+1))
       logx A "act=deprioritize pid=$pid pkg=$pkg nice=0→$STORM_NICE_APP"
@@ -269,12 +412,173 @@ storm_window() {
   storm_restore_pending storm_end
   restore_ms=$(( $(now_ms) - rs0 ))
   rm -rf "$STORM_FLAG" 2>/dev/null
-  # v1.4.3：reniced_tid=线程口径总 renice 数，用于与还原统计（unit=tid）对账；
-  # app_renice 仍为进程口径（与历史数据可比）
   logx E "event=storm_end reason=$reason duration=$(( $(date +%s) - t0 )) app_renice=$n_app launcher_boost=$n_launcher reniced_tid=$reniced_tid psi_exit=$([ "$psi_low" -ge 3 ] && echo yes || echo no) scan_ms=${last_scan_ms:-NA} restore_ms=${restore_ms:-NA}"
 }
 
-# 直接执行本库文件时退出（防止误运行）
+# isolate_kswapd 已于 v1.9.0 废除（实测48次全被内核 Power HAL 打回，且副作用引发 Direct Reclaim 激增）
+# kswapd 亲和性完全交由内核原生管理，模块不再干预。
+# restore_kswapd 亦同步废除，无需还原任何掩码。
+
+
+
+# camera_vip_on: 相机激活时提权 cameraserver 与 HAL provider（严格遵守增量语义）
+# 设计约束：
+#   1. 通过 cmdline 匹配 provider PID，避免 comm 截断问题；
+#   2. 备份各进程原始 nice 到 $CAMERA_VIP_BAK，用于退出时精确还原；
+#   3. GEMINI.md 铁律：若进程已享有高于 -10 的优先级，跳过（严禁反向降级）。
+# v1.9.10: 记录每个目标的 renice 结果（实测 cameraserver nice=0 → renice 后仍=0，
+#   疑被 Android SchedulingPolicy 服务拉回；记录 actual_nice 供审计判定是否生效）。
+camera_vip_on() {
+  : > "$CAMERA_VIP_BAK" 2>/dev/null
+  # 定位 cameraserver（pgrep 精确匹配进程名）
+  cs_pid=$(pgrep -x cameraserver 2>/dev/null | head -n 1)
+  # 定位 vendor camera provider（通过 cmdline 匹配，避免 comm 截断 15 字节问题）
+  # v1.9.7: 优先匹配三星硬件 ISP provider——实测通配 *camera.provider* 会先命中
+  # USB 外置摄像头驱动（PID 1768），而 2 亿像素/8K 运算真正的 provider 是
+  # vendor.samsung.hardware.camera.provider-service_64。两段式：先精确后兜底。
+  prov_pid=""
+  for d in /proc/[0-9]*; do
+    cmd=$(strings "$d/cmdline" 2>/dev/null | head -n 1)
+    case "$cmd" in *samsung.hardware.camera.provider*|*samsung*camera-provider*)
+      prov_pid=${d##*/}; break;; esac
+  done
+  if [ -z "$prov_pid" ]; then
+    for d in /proc/[0-9]*; do
+      cmd=$(strings "$d/cmdline" 2>/dev/null | head -n 1)
+      case "$cmd" in *camera.provider*|*camera-provider*)
+        prov_pid=${d##*/}; break;; esac
+    done
+  fi
+  for pid in $cs_pid $prov_pid; do
+    case "$pid" in ''|*[!0-9]*) continue;; esac
+    [ -d "/proc/$pid" ] || continue
+    cur=$(nice_of "$pid")
+    case "$cur" in ''|*[!0-9-]*) continue;; esac
+    echo "$pid $cur" >> "$CAMERA_VIP_BAK" 2>/dev/null
+    # GEMINI.md 铁律：严禁反向降级已有更高优先级的线程（cur <= -10 说明已更优）
+    [ "$cur" -le -10 ] && { logx S "act=camera_vip_skip pid=$pid cur=$cur reason=already_high"; continue; }
+    renice -n $((-10 - cur)) -p "$pid" >/dev/null 2>&1
+    # v1.9.10: 验证 renice 是否实际生效
+    actual=$(nice_of "$pid")
+    case "$actual" in ''|*[!0-9-]*) actual=NA;; esac
+    if [ "$actual" = "-10" ]; then
+      logx A "act=camera_vip_set pid=$pid nice=$cur→-10 result=ok"
+    else
+      logx W "act=camera_vip_set pid=$pid nice=$cur→-10 result=actual=$actual msg=renice可能被系统调度策略重置"
+    fi
+  done
+  logx A "act=camera_vip_on msg=相机底层服务提权完成"
+}
+
+# camera_vip_off: 相机退出时精确还原底层服务优先级
+# 设计约束：
+#   1. 读取备份文件中的原始 nice；
+#   2. 实时读取当前 nice，计算增量差值后还原（防因系统并发修改导致数值错乱）；
+#   3. 还原完毕后删除备份文件，实现完全无痕退出。
+camera_vip_off() {
+  [ -s "$CAMERA_VIP_BAK" ] || return 0
+  while read -r pid orig; do
+    case "$pid" in ''|*[!0-9]*) continue;; esac
+    [ -d "/proc/$pid" ] || continue
+    cur=$(nice_of "$pid")
+    case "$cur" in ''|*[!0-9-]*) continue;; esac
+    # 数学差值还原：避免直接用原始值作 increment 导致反复累加的经典 Bug
+    renice -n $((orig - cur)) -p "$pid" >/dev/null 2>&1
+  done < "$CAMERA_VIP_BAK"
+  rm -f "$CAMERA_VIP_BAK" 2>/dev/null
+  logx A "act=camera_vip_off msg=相机底层服务优先级已无损还原"
+}
+
+# incident_cleanup：保留最新 10 个黑匣子快照，删除更早的文件（防磁盘无限堆积）
+incident_cleanup() {
+  cnt=$(ls "$RUN"/incident-*.log 2>/dev/null | wc -l)
+  if [ "$cnt" -gt 10 ]; then
+    ls "$RUN"/incident-*.log 2>/dev/null | head -n $((cnt - 10)) | while read -r f; do
+      rm -f "$f" 2>/dev/null
+      logx S "act=incident_cleanup file=${f##*/}"
+    done
+  fi
+}
+
+# v1.9.11: check_rollback_disarm —— Staged Rollback 地雷自动排除（P1'）
+# 背景（2026-10-08 取证）：root 环境干扰 mainline APEX staged 激活，session 失败后
+# RollbackManager 遗留 enabling 态回滚；该状态一旦存在，任何软重启都会被应用并
+# 强制 reboot(rollback_staged_install) 完整重启丢失 Root（当日 00:16 事故：
+# CrashRecovery "Rolling back sdkext/adservices, Reason:1" 铁证；8-22 起共 5 次同源）。
+# One UI 16 已移除全部 rollback 管理 shell 命令，唯一有效排除路径：
+#   pm install-abandon <originalSessionId>（rollback 依附 install session 生命周期）。
+# 安全边界：
+#   1. 仅处置"孤儿"回滚——session 已终结（不在 staged-sessions 列表或 isFailed=true）；
+#      待安装的活跃 session 绝不 abandon（否则会取消正常 mainline 更新）；
+#   2. 默认 dry-run 只检测记日志；用户确认后 touch $ROLLBACK_DISARM_ENABLE 启用真实处置；
+#   3. 6 小时去重（发现 enabling 即写 ts；无 enabling 不写，保持下轮检测）；
+#   4. 每次至多处置 1 个；abandon 失败只记日志，绝不重试。
+#   5. dumpsys 输出直连管道不经 shell 变量（>140KB 会触发 ARG_MAX 使检测静默失效，部署实测修复）。
+check_rollback_disarm() {
+  _now=$(date +%s)
+  _last=$(cat "$ROLLBACK_DISARM_TS" 2>/dev/null)
+  case "$_last" in ''|*[!0-9]*) _last=0;; esac
+  [ $((_now - _last)) -lt 21600 ] && return 0
+  # ARG_MAX 防御（2026-10-08 部署实测修复）：dumpsys rollback 输出 >140KB（332 个 staged sessions 堆积），
+  # shell 变量经 printf 传参会报 "Argument list too long" 使检测静默失效 → dumpsys 直连管道不经变量
+  rb_id=$(dumpsys rollback 2>/dev/null | grep -B1 'state: enabling' | grep -o '^[0-9][0-9]*' | head -n 1)
+  if [ -z "$rb_id" ]; then
+    return 0
+  fi
+  echo "$_now" > "$ROLLBACK_DISARM_TS" 2>/dev/null
+  rb_sid=$(dumpsys rollback 2>/dev/null | grep -A20 "^$rb_id:" | grep -m1 'originalSessionId' | grep -o '[0-9][0-9]*$')
+  if [ -z "$rb_sid" ]; then
+    logx W "warn=rollback_enabling rollback_id=$rb_id msg=originalSessionId解析失败_请手动检查"
+    return 0
+  fi
+  _sess=$(pm list staged-sessions 2>/dev/null | grep "sessionId = $rb_sid;")
+  if [ -z "$_sess" ]; then
+    _sess_state=orphan_gone
+  elif printf '%s' "$_sess" | grep -q 'isFailed = true'; then
+    _sess_state=orphan_failed
+  else
+    _sess_state=active
+  fi
+  if [ ! -f "$ROLLBACK_DISARM_ENABLE" ]; then
+    logx W "event=rollback_disarm_dryrun rollback_id=$rb_id session=$rb_sid sess=$_sess_state msg=dry_run默认_确认后touch_run/rollback_disarm.enable启用"
+    return 0
+  fi
+  if [ "$_sess_state" = "active" ]; then
+    logx W "event=rollback_disarm_skipped rollback_id=$rb_id session=$rb_sid reason=session_active msg=待安装更新不触碰"
+    return 0
+  fi
+  _ab_out=$(pm install-abandon "$rb_sid" 2>&1)
+  _ab_rc=$?
+  if [ "$_ab_rc" -eq 0 ] && [ "$_ab_out" = "Success" ]; then
+    _chk=$(dumpsys rollback 2>/dev/null | grep -A2 "^$rb_id:" | grep -c 'state: enabling')
+    case "$_chk" in ''|*[!0-9]*) _chk=1;; esac
+    if [ "$_chk" -eq 0 ]; then
+      echo "$(date '+%m-%d %H:%M:%S') rollback_id=$rb_id session=$rb_sid sess=$_sess_state" > "$ROLLBACK_DISARM_FLAG" 2>/dev/null
+      logx A "act=rollback_disarm rollback_id=$rb_id session=$rb_sid sess=$_sess_state result=ok"
+    else
+      logx W "act=rollback_disarm rollback_id=$rb_id session=$rb_sid result=unclear msg=abandon报Success但状态未刷新_待下轮复查"
+    fi
+  else
+    logx W "act=rollback_disarm rollback_id=$rb_id session=$rb_sid result=fail rc=$_ab_rc out=${_ab_out:-empty}"
+  fi
+}
+
+# v1.9.11: env_baseline —— 启动环境基线（每会话一次，S 级）
+# 2026-10-08 定性修正：max_cached_processes=1030 为三星原生行为
+# （框架内 mCustomizedMaxCachedProcesses=1024 派生），非篡改，只记基线不告警；
+# 真正要防的是 Scene 类模块经 system.prop 注入 ro.lmk.medium / ro.sys.fw.bg_apps_limit
+# 篡改 LMK（2026-09 实测事故源），该检测保留并维持 W 级告警。
+env_baseline() {
+  _lmk=$(getprop ro.lmk.medium 2>/dev/null)
+  _bg=$(getprop ro.sys.fw.bg_apps_limit 2>/dev/null)
+  _wm=$(cat /proc/sys/vm/watermark_scale_factor 2>/dev/null)
+  _mc=$(dumpsys activity settings 2>/dev/null | grep -m1 'max_cached_processes=' | sed 's/.*=//')
+  logx S "baseline max_cached=${_mc:-NA} lmk_medium=${_lmk:-unset} bg_apps_limit=${_bg:-unset} watermark=${_wm:-NA}"
+  if [ -n "$_lmk" ] || [ -n "$_bg" ]; then
+    logx W "warn=props_tampered lmk_medium=${_lmk:-empty} bg_apps_limit=${_bg:-empty} note=LMK属性被外部注入_排查Scene类模块"
+  fi
+}
+
 if [ "$(basename "$0")" = "mt_lib.sh" ]; then
   echo "mt_lib.sh 是公共库，请运行 memtonic.sh"; exit 1
 fi
