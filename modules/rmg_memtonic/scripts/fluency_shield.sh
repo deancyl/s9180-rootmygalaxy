@@ -1,16 +1,16 @@
 #!/system/bin/sh
-# fluency_shield.sh —— RMG MemTonic 前台绝对护盾 (FR-9) + Camera Sentinel + Screenshot Sentinel (v1.9.12)
+# fluency_shield.sh —— RMG MemTonic 前台绝对护盾 (FR-9) + Camera Sentinel + Screenshot Sentinel (v1.10.0)
 # FR-9：PSI 内存压力飙升时精准提权前台渲染链（SurfaceFlinger + 主线程 + RenderThread）。
 # FR-C Camera Sentinel：每 5 秒嗅探 media.camera，相机激活时提权 HAL 服务。
 # FR-S Screenshot Sentinel：监控截屏目录文件数，截屏后 30 秒内对前台 App 提权防卡顿。
 #
 # Fix-B: renice 还原使用差值计算（orig - cur），消除原始值被当 increment 累加的经典 Bug。
 # Fix-E: 护盾退出后 5 秒冷却防抖，防 PSI 持续高企时连续重触发。
-# v1.9.12: 同步版本号（v1.9.11 遗留：日志串仍为 1.9.10，与 module.prop 不一致）。
+# v1.10.0: 同步版本号（v1.10.0 发布遗漏，自审补齐——v1.9.12 立下的版本串一致性规矩）。
 . "$(dirname "$0")/mt_lib.sh"
 
 echo $$ > "$RUN/fluencyshield.pid"
-logx E "event=fluency_shield_start ver=1.9.12 msg=FR-9+CameraSentinel(focus)+ScreenshotSentinel已开启"
+logx E "event=fluency_shield_start ver=1.10.0 msg=FR-9+CameraSentinel(focus)+ScreenshotSentinel已开启"
 
 is_boosting=0
 shield_cooldown_until=0   # Fix-E: 护盾冷却截止时间戳

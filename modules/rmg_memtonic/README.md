@@ -1,8 +1,10 @@
 # RMG MemTonic —— SM-S9180 内存与异常守护模块
 
-- 模块 ID：`rmg_memtonic` ｜ 版本：v1.9.12 ｜ 适用：Galaxy S23 Ultra（SM-S9180，dm3q）KernelSU 临时 Root（late-load）方案
+- 模块 ID：`rmg_memtonic` ｜ 版本：v1.10.0 ｜ 适用：Galaxy S23 Ultra（SM-S9180，dm3q）KernelSU 临时 Root（late-load）方案
 
 ## 版本历史
+
+- **v1.10.0（2026-10-10）**：内存风暴三件套——mem PSI 60s 连续监测（内建 read 零 fork）、灾难黑匣子（连续 2 轮 some≥25 落盘 PSI/meminfo/RSS+majflt Top10）、亮屏风暴级压实例外（psi some≥30 唯一通道，常规亮屏禁压铁律不变，相机/截屏守卫无条件）；kswapd>90s/h 顺手压实；前台 majflt 差分指纹预警。源自 2026-10-09 Synology 转码爆内存事故取证。
 
 - **v1.9.12（2026-10-08）**：全模块 ARG_MAX 深度审计（7 脚本全覆盖，实测取证：`dumpsys rollback`=154KB 超 128KB 上限，证实哨兵缺陷 100% 必触发并已修复）；封堵 gfxinfo 同型捕获点（改临时文件快照）；修正 v1.9.11 部署期 printf 报错的错误归因（实为哨兵缺陷，非 stop 还原路径）；同步 fluency_shield 版本串。
 - **v1.9.11（2026-10-08）**：Staged Rollback 自动排除哨兵（6h 去重检测 enabling 态，`pm install-abandon` 自动处置，默认 dry-run，`touch run/rollback_disarm.enable` 启用）；system_server PID 变化自动重置 vk 门闩并重拉监视器；启动时输出环境基线（max_cached/lmk/watermark）。

@@ -2,6 +2,24 @@
 
 ---
 
+## [v1.10.0] - 2026-10-10
+### Added（内存风暴三件套，源自 2026-10-09 Synology Photos 转码事故取证）
+- **P1-1 mem PSI 连续监测**：`psi_mem_read` 挂载 cpu_guard 60s 轮——mksh 内建 `read` 复合重定向零 fork（真机实测 fork 版 `cat` 9.35ms/次 → 内建 <0.5ms），零新增唤醒源。常态静默，仅超阈记日志。
+- **P0-2 灾难黑匣子**：连续 2 轮 `psi_mem some≥25`（= 持续 2 分钟）落盘 `run/blackbox-*.log`——PSI 三项 + avail/swap + kswapd + RSS/majflt 双 Top10（单次 `/proc/[0-9]*/stat` 遍历同时取双指标，前 3 名补包名）。冷却 900s + 每日 10 份封顶 + 轮转保留 5 份。背景：10-09 事故的关键证据（PSI full 10.6% / majflt 18,486）靠 daagent ANR 报告碰巧带出，黑匣子让取证不再靠运气。最坏开销 0.04% 占空比（对照 10-09 风暴 kswapd 22%）。
+- **P0-1 亮屏风暴级压实例外**：`maintenance` 新增 `storm=1` 第二参数——GEMINI"亮屏禁压"铁律保留，唯一例外通道 = `psi_mem some≥30`（cpu_guard 探针硬阈值保证）；相机/截屏/启动风暴守卫**无条件生效**；与息屏 R3 路径共用 `last_compact.ts` 统一 900s 冷却（R3 原冷却 3600s 同步收紧）。
+- **P1-2 kswapd_growth 顺手压实**：kswapd 每小时 CPU > 90s（换页风暴实锤）时经风暴级例外通道触发一次压实（1h 判定周期天然限频），不再只写"建议软重启"。
+- **P2 前台 majflt 差分指纹**：`fg_majflt_sum` 单次 awk 汇总 top-app 全部 pid 的 majflt，60s 差分 ≥500 记 W 级预警（10min 限频）——转码/媒体导入类负载信号，为 rmg_sentinel 试点铺路。
+
+### Changed
+- `mt_lib.sh` 头注释升级 v1.10.0；新增 `psi_mem_read`（变量返回式，杜绝 `$()` 子 shell fork）/ `fg_majflt_sum` / `mem_blackbox`。
+- `cpu_guard.sh` 主循环新增 `mem_probe` 挂载点（check_dropbox 之后、风暴短路之前——取证不避风暴期）；新增探针常量组。
+- 字段索引推演验证：去 comm 后 stat `majflt=$10`、`rss=$22`（与 `cpu_ticks_of` 的 `$12+$13=utime+stime` 同源核对一致）。
+
+### 边界（不变）
+不杀进程 / 不冻结 / 不动 zram / 不持久修改内核参数（`compact_memory` 为一次性动作，非参数写入）/ 无 sepolicy / 无 boot 脚本。
+
+---
+
 ## [v1.9.12] - 2026-10-08
 ### Added（全模块 ARG_MAX 深度审计，7 脚本全覆盖）
 - **审计范围**：memtonic.sh / mt_lib.sh / cpu_guard.sh / fluency_shield.sh / storm_guard.sh / vk_injector.sh / in_app_stress_test.sh 的全部"大输出传参"路径——`printf '%s' "$var"`、`echo "$var" |`、`$(cmd)` 完整捕获、批量 renice 传参、字符串累积清单（done_pids / app_list / batch_tids）。

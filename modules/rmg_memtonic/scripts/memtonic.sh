@@ -1,5 +1,19 @@
 #!/system/bin/sh
-# memtonic.sh —— RMG MemTonic v1.9.12（SM-S9180 内存与异常守护）
+# memtonic.sh —— RMG MemTonic v1.10.0（SM-S9180 内存与异常守护）
+#
+# v1.10.0 内存风暴监测/快照/亮屏风暴级压实（源自 2026-10-09~10 Synology 转码事故取证）：
+#   * P1-1 mem PSI 连续监测：cpu_guard 60s 轮挂载 psi_mem_read（mksh 内建 read 零 fork，
+#     实测 fork 版 9.35ms/次 → 内建 <0.5ms，零新增唤醒）；
+#   * P0-2 灾难黑匣子：连续 2 轮 psi_mem some≥25 落盘 PSI/meminfo/RSS+majflt Top10
+#     （2026-10-09 事故关键证据靠 daagent ANR 碰巧带出，黑匣子让取证不再靠运气）；
+#     冷却 900s + 日限 10 份 + 轮转 5 份，最坏 0.04% 占空比；
+#   * P0-1 亮屏风暴级压实例外：GEMINI 铁律"亮屏禁压"保留，唯一例外通道 =
+#     psi_mem some≥30（调用方硬阈值保证）+ 相机/截屏/风暴守卫无条件生效；
+#   * P1-2 kswapd_growth（>90s CPU/h）顺手触发压实（风暴级例外通道，1h 天然限频）；
+#   * P2 前台 majflt 差分指纹（≥500/60s 记预警，10min 限频）——转码类负载信号，
+#     为 rmg_sentinel 试点铺路；
+#   * maintenance 新增 storm=1 第 2 参数（铁律例外通道），R3 息屏压实冷却 3600s→900s
+#     与亮屏路径共用 last_compact.ts 统一限频。
 #
 # v1.9.12 全模块 ARG_MAX 审计修复（2026-10-08 部署实测后深审，7 脚本全覆盖）：
 #   * 封堵 gfxinfo 捕获点（in_app_stress_test.sh）：dumpsys 输出改落临时文件快照，
@@ -51,10 +65,16 @@
 
 . "$(dirname "$0")/mt_lib.sh"
 
-# maintenance <标签>：执行一轮内存维护（按需压实）
+# maintenance <标签> [storm]：执行一轮内存维护（按需压实）
 # 彻底剔除 drop_caches，绝不人为丢弃页缓存，杜绝应用冷读盘性能劣化。
+# v1.10.0: 新增第 2 参数 storm=1 —— GEMINI.md 亮屏铁律的"风暴级例外"唯一通道：
+#   仅当调用方已用硬阈值（psi_mem some≥30 或 kswapd≥90s/h）证明设备深陷内存风暴时
+#   才允许亮屏压实（2026-10-09 Synology 转码事故：PSI mem full 10.6% 设备整体停顿，
+#   压实 1s CPU 相对风暴是九牛一毛，两害相权取其轻）；常规亮屏禁压铁律不变；
+#   相机/截屏守卫无条件生效（即使风暴级例外，录像中压实掉帧同样不可接受）。
 maintenance() {
   tag=$1
+  _storm=${2:-0}
   # P0 Camera Sentinel 协同：相机活跃期间（录像/连拍/扫码）严禁触发内存压实！
   if [ -f "$RUN/camera_active.flag" ]; then
     logx W "[$tag] 拒绝执行：相机活跃中，严禁内存压实防录像掉帧"
@@ -66,9 +86,13 @@ maintenance() {
     return 1
   fi
   # GEMINI.md 铁律防护：内存压实耗时数百毫秒，绝不允许在亮屏期间触发
+  # v1.10.0: 风暴级例外（storm=1）是唯一放行通道，门槛由调用方硬阈值保证
   if ! screen_off; then
-    logx W "[$tag] 拒绝执行：检测到屏幕处于亮屏/交互状态，严禁内存压实防掉帧"
-    return 1
+    if [ "$_storm" != "1" ]; then
+      logx W "[$tag] 拒绝执行：检测到屏幕处于亮屏/交互状态，严禁内存压实防掉帧"
+      return 1
+    fi
+    logx W "[$tag] 亮屏风暴级例外放行：psi/kswapd 硬阈值已满足_两害相权取其轻"
   fi
   if ! mkdir "$LOCK" 2>/dev/null; then
     lp=$(cat "$LOCK/pid" 2>/dev/null)
@@ -222,7 +246,7 @@ if [ -n "$_existing" ] && [ -d "/proc/$_existing" ] && grep -q memtonic /proc/$_
 fi
 check_root_liveness
 echo "$$:$(pid_starttime $$)" > "$PIDF"
-logx E "event=start ver=1.9.12 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
+logx E "event=start ver=1.10.0 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
 
 # 即刻触发一次 Staged Rollback 检测（事前告警，防误重启丢 Root）
 check_staged_rollback
@@ -311,6 +335,10 @@ while true; do
           else
             logx W "warn=kswapd_growth delta_ms=$ks_delta suggest=soft_reboot reason=memory_thrashing"
           fi
+          # v1.10.0 P1-2: kswapd 每小时烧 >90s CPU = 换页风暴实锤，顺手触发一次压实
+          # （风暴级例外通道，亮屏也放行；kswapd 判定 1h 一次天然限频，无叠加风险）
+          # 相机/截屏守卫在 maintenance 内部无条件生效
+          maintenance ks_growth_compact 1
         fi
       else
         logx S "health_snap avail_kb=$(avail_kb) swap_used=${sw}KB psi_cpu=$(psi_val cpu some) psi_mem=$(psi_val memory some) psi_io=$(psi_val io some) kswapd_pid=$ks_pid kswapd_delta_ms=NA"
@@ -336,13 +364,14 @@ while true; do
     continue
   fi
 
-  # R3: 纯按需压实（息屏 + 高 PSI 压力 + 3600s 冷却控制）
+  # R3: 纯按需压实（息屏 + 高 PSI 压力 + 900s 冷却控制）
+  # v1.10.0: 冷却 3600s→900s，与 cpu_guard 亮屏风暴级压实共用 last_compact.ts 统一限频
   if screen_off; then
     if psi_mem_pressure_high; then
       now=$(date +%s)
       last_compact=$(cat "$RUN/last_compact.ts" 2>/dev/null)
       case "$last_compact" in ''|*[!0-9]*) last_compact=0;; esac
-      if [ $((now - last_compact)) -ge 3600 ]; then
+      if [ $((now - last_compact)) -ge 900 ]; then
         echo "$now" > "$RUN/last_compact.ts"
         maintenance on_demand_pressure
       fi

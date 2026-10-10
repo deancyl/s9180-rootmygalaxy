@@ -1,5 +1,11 @@
 #!/system/bin/sh
-# mt_lib.sh —— RMG MemTonic 公共库（v1.9.12 - Staged Rollback 地雷排除哨兵 + 环境基线 + ARG_MAX 审计）
+# mt_lib.sh —— RMG MemTonic 公共库（v1.10.0 - 内存风暴监测/快照/亮屏风暴级压实）
+# v1.10.0: 新增内存风暴三件套（供 cpu_guard 60s 轮挂载，零新增唤醒）：
+#   1. psi_mem_read —— mksh 内建 read 读 /proc/pressure/memory（无 fork，实测 fork 版 9.35ms/次 → 内建 <0.5ms）；
+#   2. fg_majflt_sum —— 单次 awk 汇总 top-app 全部 pid 的 majflt（P2 重负载指纹）；
+#   3. mem_blackbox —— 灾难快照落盘（PSI+meminfo+RSS/majflt Top10，触发式，稀有事件）。
+#   亮屏压实走"风暴级例外"：常规亮屏 GEMINI.md 铁律禁压不变，仅 psi_mem some≥30 例外，
+#   相机/截屏守卫无条件生效。
 # v1.9.12: 全模块大输出传参审计——本库所有 dumpsys 捕获点均为"管道直连过滤"或"子 shell
 #   直连重定向"（capture_incident），无 shell 变量中转；check_rollback_disarm 的 ARG_MAX
 #   缺陷已于 v1.9.11 部署实测修复（详见该函数头注释第 5 条）。
@@ -561,6 +567,82 @@ check_rollback_disarm() {
   else
     logx W "act=rollback_disarm rollback_id=$rb_id session=$rb_sid result=fail rc=$_ab_rc out=${_ab_out:-empty}"
   fi
+}
+
+# v1.10.0: psi_mem_read —— 无 fork 读内存 PSI（供 60s 探针高频调用）
+# mksh 内建 read 两次独立打开（每次重开文件，规避 seq_file 单次 read() 吞全量后
+# 二次 read 直接 EOF 的坑——复合 `{ read; read; } < file` 模式真机实测必失败）；
+# 全局变量返回：P_S10 / P_S60 / P_F10（整数），读取失败 return 1 且不触碰变量。
+# 注意：故意不用 echo+$() 模式——命令替换会引入子 shell fork，违背零 fork 设计。
+psi_mem_read() {
+  local _s10 _s60 _f10
+  read -r _ _s10 _s60 _ < /proc/pressure/memory 2>/dev/null || return 1
+  read -r _ _f10 _ < /proc/pressure/memory 2>/dev/null || return 1
+  _s10=${_s10#avg10=}; _s60=${_s60#avg60=}; _f10=${_f10#avg10=}
+  _s10=${_s10%%.*}; _s60=${_s60%%.*}; _f10=${_f10%%.*}
+  case "$_s10$_s60$_f10" in ''|*[!0-9]*) return 1;; esac
+  P_S10=$_s10; P_S60=$_s60; P_F10=$_f10
+  return 0
+}
+
+# v1.10.0: fg_majflt_sum —— top-app 全部 pid 的 majflt 累计和（P2 重负载指纹）
+# 单次 awk：读 cgroup v1 tasks 列表 + getline 逐 pid 取 /proc/pid/stat 的 majflt（去 comm 后第 10 字段）。
+# 转码/媒体导入类负载的指纹 = 前台 majflt 增速暴涨（2026-10-09 Synology 实测 18,486 major faults）。
+# cgroup 不存在或无 pid 时输出空（调用方按 NA 处理）。
+fg_majflt_sum() {
+  awk '
+    { pids[++n] = $1 }
+    END {
+      if (NR == 0) { print ""; exit }
+      total = 0
+      for (i = 1; i <= n; i++) {
+        while ((getline line < ("/proc/" pids[i] "/stat")) > 0) {
+          sub(/^[0-9]+ \([^)]*\) /, "", line)
+          split(line, f, " ")
+          total += f[10] + 0
+          break
+        }
+      }
+      print total
+    }
+  ' /dev/cpuset/top-app/tasks 2>/dev/null
+}
+
+# v1.10.0: mem_blackbox —— 灾难快照落盘（黑匣子，触发式稀有事件）
+# 用法：mem_blackbox <trigger> <some10> <some60> <full10>
+# L1 内容（PSI 三项 + avail/swap + kswapd）+ L2 内容（单次 /proc/[0-9]*/stat 遍历
+# 同时取 majflt/rss 双指标 Top10，实测同型扫描 ~250ms；前 3 名补包名便于定位）。
+# 轮转保留最新 5 份（blackbox-*），与 incident-* 互不挤占。
+mem_blackbox() {
+  _trig=$1; _s10=$2; _s60=$3; _f10=$4
+  _bb="$RUN/blackbox-$(date '+%Y%m%d_%H%M%S').log"
+  _sw=$(awk '/^SwapTotal/{t=$2}/^SwapFree/{f=$2}END{print t-f}' /proc/meminfo 2>/dev/null)
+  _ks=$(pgrep -x kswapd0 2>/dev/null | head -n 1)
+  _kscpu=$(self_cpu_ms "$_ks" 2>/dev/null)
+  [ -n "$_kscpu" ] || _kscpu=NA
+  {
+    echo "# MemTonic blackbox $(date '+%m-%d %H:%M:%S') trigger=$_trig"
+    echo "psi_mem some10=${_s10}% some60=${_s60}% full10=${_f10}%"
+    echo "psi_cpu_some10=$(psi_val cpu some)% psi_io_some10=$(psi_val io some)%"
+    echo "avail_kb=$(avail_kb) swap_used_kb=${_sw:-NA}"
+    echo "kswapd_pid=${_ks:-NA} kswapd_cpu_total_ms=$_kscpu"
+    echo "# top10: majflt rss_kb pid pkg"
+    awk '
+      FNR == 1 {
+        pid = FILENAME; sub(/\/proc\//, "", pid); sub(/\/stat.*/, "", pid)
+        line = $0; sub(/^[0-9]+ \([^)]*\) /, "", line)
+        split(line, f, " ")
+        if (f[10] > 0 || f[22] > 8192) print f[10], f[22], pid
+      }
+    ' /proc/[0-9]*/stat 2>/dev/null | sort -rn | head -n 10 | while read -r mf rs bp; do
+      echo "majflt=$mf rss_kb=$rs pid=$bp pkg=$(pkg_of "$bp" 2>/dev/null)"
+    done
+  } > "$_bb" 2>/dev/null
+  # 轮转：保留最新 5 份
+  ls "$RUN"/blackbox-*.log 2>/dev/null | sort -r | tail -n +6 | while read -r old; do
+    rm -f "$old" 2>/dev/null
+  done
+  logx A "act=mem_blackbox file=${_bb##*/} trigger=$_trig psi_mem_some10=${_s10}%"
 }
 
 # v1.9.11: env_baseline —— 启动环境基线（每会话一次，S 级）

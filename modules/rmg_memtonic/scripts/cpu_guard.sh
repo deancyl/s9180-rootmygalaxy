@@ -10,6 +10,11 @@
 #   占扫描墙钟 60%。改为 snapshot_app_pids 一次 awk 批量提取所有 uid>=10000 的 pid 列表，
 #   实测单次 awk 全量 = 250ms（提速 65 倍）。整体每轮扫描从 27s → <2s 预期。
 #   take_ticks_snapshot 同步重构：改为接收 pid 列表参数，避免重复全盘扫描。
+# v1.10.0: 内存风暴探针 mem_probe 挂载本循环（60s 粒度零新增唤醒）：
+#   P1-1 常态监测 psi_mem（内建 read 零 fork）；P0-2 连续 2 轮 some≥25 落灾难黑匣子
+#   （冷却 900s + 日限 10 份 + 轮转 5 份）；P0-1 风暴级亮屏压实例外（some≥30，共用
+#   last_compact.ts 900s 冷却，相机/截屏/启动风暴守卫无条件生效）；P2 前台 majflt
+#   差分指纹（≥500/60s 记预警，10min 限频）。
 
 . "$(dirname "$0")/mt_lib.sh"
 
@@ -22,6 +27,15 @@ CPU_EXTREME_THRESH=300   # FR-12: 单窗口 CPU > 300% 直接干预（脉冲式�
 ROGUE_LST=$RUN/cpu_rogue_renice.lst
 DROPBOX=/data/system/dropbox
 DROPBOX_STATE=$RUN/dropbox_state.txt
+
+# v1.10.0: 内存风暴探针参数
+MEM_BB_THRESH=25      # P0-2 快照触发：psi_mem some avg10 ≥ 25（风暴级，日常亮屏通常 <10）
+MEM_BB_ROUNDS=2       # 连续轮数（60s/轮 → 持续 2 分钟才算风暴）
+MEM_BB_COOL=900       # 快照冷却（秒）
+MEM_BB_DAYMAX=10      # 每日快照上限（最坏 10 份 × ~5KB/天）
+MEM_CMPCT_THRESH=30   # P0-1 风暴级亮屏压实门槛（psi_mem some avg10，铁律例外唯一通道）
+CMPCT_COOL=900        # 压实冷却：与 memtonic R3 共用 last_compact.ts，全局统一 900s
+FG_MFLT_RATE=500      # P2 前台 majflt 增速预警（次/60s 窗口，转码类负载指纹级别）
 
 echo $$ > "$RUN/cpuguard.pid" 2>/dev/null
 
@@ -249,6 +263,91 @@ check_dropbox() {
   [ "$changed" = "1" ] && init_dropbox_state
 }
 
+# ---- v1.10.0 内存风暴探针 ----
+
+# 风暴级亮屏压实（GEMINI 铁律的唯一例外通道）
+# 调用前置条件：P_S10 ≥ MEM_CMPCT_THRESH（本函数不再重复验证压力）。
+# 守卫（无条件生效，一个都不能少）：
+#   相机活跃 / 截屏处理 —— 压实掉帧不可接受，与 memtonic maintenance 同源 flag；
+#   启动风暴期 —— 护栏正在 renice 让路，不添乱；
+#   $LOCK 互斥 —— 与 memtonic maintenance（息屏路径）共用 mkdir 原子锁，抢不到就跳过本轮；
+#   last_compact.ts —— 两条压实路径共用冷却时间戳，防叠加。
+do_fg_compact() {
+  if [ -f "$CAMERA_ACTIVE_FLAG" ] || [ -f "$SCREENSHOT_ACTIVE_FLAG" ] || [ -d "$STORM_FLAG" ]; then
+    return 0
+  fi
+  # v1.10.0 自审修正：陈旧锁回收——stop 路径 kill -9 cpu_guard 若恰逢压实行进中，
+  # $LOCK 残留会使本路径永久静默失效（maintenance 有回收逻辑，但息屏条件不满足时
+  # 长期不触发）。与 maintenance 同款：持锁 pid 已死则回收重试一次。
+  if ! mkdir "$LOCK" 2>/dev/null; then
+    lp=$(cat "$LOCK/pid" 2>/dev/null)
+    if alive "$lp"; then return 0; fi
+    rm -rf "$LOCK" 2>/dev/null
+    mkdir "$LOCK" 2>/dev/null || { logx W "act=fg_compact result=fail note=无法获取锁"; return 0; }
+  fi
+  echo $$ > "$LOCK/pid" 2>/dev/null
+  echo "$(date +%s)" > "$RUN/last_compact.ts" 2>/dev/null
+  if echo 1 > /proc/sys/vm/compact_memory 2>/dev/null; then
+    logx W "act=fg_compact psi_mem_some10=${P_S10}% result=ok note=风暴级例外_psi≥$MEM_CMPCT_THRESH_亮屏铁律放行"
+  else
+    logx W "act=fg_compact result=fail note=compact_memory写入失败"
+  fi
+  rm -rf "$LOCK" 2>/dev/null
+}
+
+# 每 60s 一轮的内存风暴探针（挂主循环，零新增唤醒；读取失败静默跳过）
+mem_probe() {
+  psi_mem_read || return 0
+
+  # P0-2: 连续 MEM_BB_ROUNDS 轮 some≥THRESH → 灾难黑匣子（取证不避风暴期）
+  if [ "$P_S10" -ge "$MEM_BB_THRESH" ]; then
+    _mem_hi=$((_mem_hi + 1))
+  else
+    _mem_hi=0
+  fi
+  if [ "$_mem_hi" -ge "$MEM_BB_ROUNDS" ]; then
+    _now=$(date +%s)
+    _last=$(cat "$RUN/last_blackbox.ts" 2>/dev/null)
+    case "$_last" in ''|*[!0-9]*) _last=0;; esac
+    _today=$(date '+%Y%m%d')
+    _bd=$(cat "$RUN/blackbox_day.cnt" 2>/dev/null)
+    _bday=${_bd%% *}; _bcnt=${_bd##* }
+    case "$_bday" in "$_today") :;; *) _bcnt=0;; esac
+    case "$_bcnt" in ''|*[!0-9]*) _bcnt=0;; esac
+    if [ $((_now - _last)) -ge "$MEM_BB_COOL" ] && [ "$_bcnt" -lt "$MEM_BB_DAYMAX" ]; then
+      echo "$_now" > "$RUN/last_blackbox.ts" 2>/dev/null
+      echo "$_today $_((_bcnt + 1))" > "$RUN/blackbox_day.cnt" 2>/dev/null
+      mem_blackbox "psi_storm" "$P_S10" "$P_S60" "$P_F10"
+      _mem_hi=0
+    fi
+  fi
+
+  # P0-1: 风暴级亮屏压实例外（常规亮屏铁律禁压不变，仅 some≥30 放行）
+  if [ "$P_S10" -ge "$MEM_CMPCT_THRESH" ]; then
+    _now=$(date +%s)
+    _lc=$(cat "$RUN/last_compact.ts" 2>/dev/null)
+    case "$_lc" in ''|*[!0-9]*) _lc=0;; esac
+    if [ $((_now - _lc)) -ge "$CMPCT_COOL" ]; then
+      do_fg_compact
+    fi
+  fi
+
+  # P2: 前台 majflt 差分指纹（转码/媒体导入类负载预警，10min 限频）
+  _fm=$(fg_majflt_sum)
+  if [ -n "$_fm" ] && [ -n "$_fg_mflt_prev" ]; then
+    _fd=$((_fm - _fg_mflt_prev))
+    [ "$_fd" -lt 0 ] && _fd=0   # PID 复用/重启防负值
+    if [ "$_fd" -ge "$FG_MFLT_RATE" ]; then
+      _now=$(date +%s)
+      if [ $((_now - _fg_mflt_warn_ts)) -ge 600 ]; then
+        logx W "warn=fg_majflt_burst rate=${_fd}/60s total=$_fm note=前台重负载指纹_转码类_关注进程存活"
+        _fg_mflt_warn_ts=$_now
+      fi
+    fi
+  fi
+  [ -n "$_fm" ] && _fg_mflt_prev=$_fm
+}
+
 # ---- 初始化 ----
 init_dropbox_state
 # v1.9.9: 启动时先批量拿一次 app_pids，take_ticks_snapshot 与 scan_cpu_rogue 共用
@@ -256,10 +355,14 @@ _init_app_list=$(snapshot_app_pids)
 take_ticks_snapshot "$_init_app_list"
 
 # ---- 主循环 ----
+_mem_hi=0            # v1.10: 连续超阈轮数
+_fg_mflt_prev=       # v1.10: 前台 majflt 上轮基线
+_fg_mflt_warn_ts=0   # v1.10: majflt 预警限频时间戳
 while kill -0 "$PPID" 2>/dev/null; do
   sleep $CPU_SCAN_WIN
   check_root_liveness
   check_dropbox          # FR-5：每 60s 检查崩溃/ANR 事件
+  mem_probe              # v1.10：内存风暴探针（60s 粒度，零新增唤醒，取证不避风暴）
 
   # 清理已死亡的降权线程，防止内存泄漏 (Dead Thread Leak)
   if [ -s "$ROGUE_LST" ]; then

@@ -24,7 +24,8 @@ MemTonic 是**配套本仓库临时 root 环境使用**的 KernelSU 模块：软
 
 | MemTonic | 说明 | 适用人群 |
 |---|---|---|
-| [`memtonic-v1.9.12`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.12) | **当前最新**：Rollback 地雷自动排除哨兵（防软重启被升级为完整重启而丢 root）、sspid 门闩重置、启动环境基线、7 脚本全量 ARG_MAX 审计修复 | **新装首选** |
+| [`memtonic-v1.10.0`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.10.0) | **当前最新**：内存风暴三件套——mem PSI 60s 连续监测（内建 read 零 fork）、灾难黑匣子（连续 2 轮 some≥25 落盘 PSI/RSS+majflt Top10）、亮屏风暴级压实例外（psi≥30 唯一通道，常规亮屏禁压铁律不变）；kswapd>90s/h 顺手压实；前台 majflt 转码指纹预警 | **新装首选** |
+| [`memtonic-v1.9.12`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.12) | Rollback 地雷自动排除哨兵（防软重启被升级为完整重启而丢 root）、sspid 门闩重置、启动环境基线、7 脚本全量 ARG_MAX 审计修复 | 稳定保守选择 |
 | [`memtonic-v1.9.6`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.6) | 修复 uninstall 盲杀防变砖、`alive()` 逻辑、vk_injector 多 PID bug | 需要 v1.9.1~1.9.5 网络救援特性者 |
 | [`memtonic-v1.9.5`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.5) | 护盾日志版本号与各脚本版本声明同步；CPU 护栏死线程清理的内存泄漏修复 | 同上 |
 | [`memtonic-v1.9.4`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.4) | 移除无效 updateJson、版本号一致性、绝对路径解析修复、CPU 护栏死线程防泄漏 | 同上 |
@@ -109,7 +110,7 @@ s9180-rootmygalaxy/
 ├── README.md                                    ← 本文件
 ├── LICENSE                                      ← GPL-3.0（KernelSU 衍生代码）
 ├── modules/
-│   └── rmg_memtonic/                            ← MemTonic 内存守护模块（当前主干 v1.9.12）
+│   └── rmg_memtonic/                            ← MemTonic 内存守护模块（当前主干 v1.10.0）
 │       启动风暴护栏 + CPU 失常护栏 + 前台护盾 + Camera/Screenshot Sentinel +
 │       Rollback 地雷排除哨兵 + 结构化日志；版本历史见上方 Releases，
 │       完整变更记录见 modules/rmg_memtonic/CHANGELOG.md
