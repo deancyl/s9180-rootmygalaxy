@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MemTonic 状态面板</title>
+<style>
+  :root{
+    --bg:#111318;--card:#1b1e25;--card2:#22262f;--tx:#e8eaf0;--tx2:#9aa1ad;
+    --ok:#4ade80;--warn:#fbbf24;--err:#f87171;--acc:#5b9cf5;--line:#2b303b;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--tx);font:14px/1.5 -apple-system,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;padding:14px 12px 28px;max-width:640px;margin:0 auto}
+  h1{font-size:17px;margin:2px 0 2px}
+  .sub{color:var(--tx2);font-size:12px;margin-bottom:12px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-bottom:12px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+  .card .n{font-size:22px;font-weight:700}
+  .card .t{color:var(--tx2);font-size:11px;margin-top:2px}
+  .row{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line);font-size:13px}
+  .row:last-child{border-bottom:none}
+  .row .k{color:var(--tx2)}
+  .state-running{color:var(--ok);font-weight:700}
+  .state-stopped{color:var(--err);font-weight:700}
+  .bar{height:6px;border-radius:3px;background:var(--card2);overflow:hidden;margin-top:4px}
+  .bar i{display:block;height:100%;border-radius:3px}
+  .hint{background:var(--card);border:1px solid var(--err);border-radius:12px;padding:14px;color:var(--err);font-size:13px;margin-top:10px}
+  .note{color:var(--tx2);font-size:11px;margin-top:10px}
+  #refresh{background:var(--acc);color:#fff;border:none;border-radius:10px;padding:8px 18px;font-size:13px;margin:4px 0 12px}
+  .list{font-size:12px;color:var(--tx2)}
+</style>
+</head>
+<body>
+<h1>MemTonic 状态面板</h1>
+<div class="sub" id="ver">RMG MemTonic 内存与异常守护</div>
+<button id="refresh" onclick="render()">↻ 刷新</button>
+<div id="content"><div class="hint">正在加载…</div></div>
+<div class="note">计数语义：当前 memtonic.log 日志周期内（日志超 256KB 截断后从零重计）。黑匣子文件位于 /data/adb/modules/rmg_memtonic/run/。</div>
+
+<script>
+// KernelSU WebUI exec 兼容层：优先 Promise 版（Manager 11989+），回落老版全局回调
+function __mt_cb(s){ if(typeof __mt_resolve==='function'){ try{ __mt_resolve(JSON.parse(s)); }catch(e){ __mt_resolve({errno:1,stdout:'',stderr:String(s)}); } __mt_resolve=null; } }
+function execCmd(cmd){
+  return new Promise(function(resolve){
+    if(!window.ksu || typeof window.ksu.exec!=='function'){ resolve({errno:1,stdout:'',stderr:'no-ksu'}); return; }
+    try{
+      var r = window.ksu.exec(cmd, {});
+      if(r && typeof r.then==='function'){ r.then(resolve).catch(function(){resolve({errno:1,stdout:'',stderr:'reject'});}); return; }
+      __mt_resolve = resolve;
+      window.ksu.exec(cmd, "", "__mt_cb");
+    }catch(e){
+      try{ __mt_resolve = resolve; window.ksu.exec(cmd, "", "__mt_cb"); }
+      catch(e2){ resolve({errno:1,stdout:'',stderr:String(e2)}); }
+    }
+  });
+}
+function int0(v){ v=parseInt(v,10); return isNaN(v)?0:v; }
+function num(v){ v=parseInt(v,10); return isNaN(v)?null:v; }
+
+async function render(){
+  var c = document.getElementById('content');
+  var st = await execCmd('. /data/adb/modules/rmg_memtonic/scripts/mt_lib.sh 2>/dev/null; collect_stats');
+  if(st.errno!==0 || !st.stdout || st.stdout.indexOf('state=')<0){
+    c.innerHTML='<div class="hint">无法读取模块状态（'+(st.stderr||'no-ksu')+'）。<br>请确认：① 在 KernelSU 管理器的模块详情页打开本 WebUI；② 模块已安装且脚本目录完整。</div>';
+    return;
+  }
+  var kv={}, toks=st.stdout.trim().split(/\s+/);
+  for(var i=0;i<toks.length;i++){ var p=toks[i].split('='); if(p.length>=2) kv[p[0]]=p.slice(1).join('='); }
+  var availMB = Math.round(int0(kv.avail_kb)/1024);
+  var psiS = kv.psi_s10, psiF = kv.psi_f10;
+  var stateCls = kv.state==='running' ? 'state-running' : 'state-stopped';
+  var stateTx  = kv.state==='running' ? '运行中' : '已停止';
+  // PSI 条：some 0-60 映射为进度条
+  var psiN = num(psiS); if(psiN===null) psiN=0;
+  var psiPct = Math.min(100, psiN*100/60);
+  var psiCol = psiN>=30?'var(--err)':(psiN>=15?'var(--warn)':'var(--ok)');
+  var cards = [
+    ['⚡ 护栏护航', kv.shield, 'shield_activate 次数'],
+    ['🌪 启动风暴', kv.storm, 'storm_start 次数'],
+    ['🚨 崩溃雷达', kv.crash, 'crash/ANR 事件'],
+    ['🗡 毒瘤降权', kv.rogue, 'cpu_rogue 次数'],
+    ['🧹 内存压实', kv.compact, 'compact 执行次数'],
+    ['📦 灾难黑匣子', kv.blackbox, 'blackbox 落盘数'],
+    ['🛡 地雷告警', kv.rollback, 'rollback 检出'],
+    ['📈 重负载指纹', kv.mjburst, 'majflt 突增预警']
+  ];
+  var h = '';
+  h += '<div class="grid">';
+  for(var i=0;i<cards.length;i++){
+    h += '<div class="card"><div class="n">'+cards[i][1]+'</div><div class="t">'+cards[i][0]+' · '+cards[i][2]+'</div></div>';
+  }
+  h += '</div>';
+  h += '<div class="card">';
+  h += '<div class="row"><span class="k">守护状态</span><span class="'+stateCls+'">'+stateTx+'（pid '+kv.pid+'）</span></div>';
+  h += '<div class="row"><span class="k">可用内存</span><span>'+availMB+' MB</span></div>';
+  h += '<div class="row"><span class="k">mem PSI some/full (avg10)</span><span>'+psiS+'% / '+psiF+'%</span></div>';
+  h += '<div class="bar"><i style="width:'+psiPct+'%;background:'+psiCol+'"></i></div>';
+  h += '</div>';
+  // 黑匣子与 incident 最近列表
+  var bb = await execCmd('ls -t /data/adb/modules/rmg_memtonic/run/blackbox-*.log 2>/dev/null | head -5; echo ---; ls -t /data/adb/modules/rmg_memtonic/run/incident-*.log 2>/dev/null | head -5');
+  var parts = (bb.stdout||'').split('---');
+  function li(s){ var a=(s||'').trim().split('\n').filter(function(x){return x;}); return a.length? a.map(function(x){return '<div class="list">'+x.replace(/.*\//,'')+'</div>'}).join('') : '<div class="list">（无）</div>'; }
+  h += '<div class="card" style="margin-top:8px"><div class="row"><span class="k">最近黑匣子</span></div>'+li(parts[0]);
+  h += '<div class="row" style="margin-top:6px"><span class="k">最近 incident 快照</span></div>'+li(parts[1])+'</div>';
+  c.innerHTML = h;
+  document.getElementById('ver').textContent = 'RMG MemTonic 内存与异常守护 · v1.11.0 · 统计口径：本日志周期';
+}
+render();
+setInterval(render, 30000); // 30s 自动刷新
+</script>
+</body>
+</html>

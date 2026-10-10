@@ -199,6 +199,7 @@ stop)
   fi
 
   logx E "event=stop"
+  update_module_desc   # v1.11.0: 停止时刷新卡片描述（守护:stopped）
   echo "守护循环已停止，所有子进程已终止，所有降权已还原。"
   exit 0
   ;;
@@ -246,13 +247,14 @@ if [ -n "$_existing" ] && [ -d "/proc/$_existing" ] && grep -q memtonic /proc/$_
 fi
 check_root_liveness
 echo "$$:$(pid_starttime $$)" > "$PIDF"
-logx E "event=start ver=1.10.0 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
+logx E "event=start ver=1.11.0 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
 
 # 即刻触发一次 Staged Rollback 检测（事前告警，防误重启丢 Root）
 check_staged_rollback
 # v1.9.11: 启动环境基线 + Rollback 地雷排除哨兵（dry-run 默认开）
 env_baseline
 check_rollback_disarm
+update_module_desc   # v1.11.0: 启动即刷卡片描述（此后事件驱动 + 每小时兜底）
 
 # 防御闭环：上次会话若在窗口中途死亡，先补还原再开始
 storm_restore_pending session_start
@@ -347,6 +349,7 @@ while true; do
     else
       logx S "health_snap avail_kb=$(avail_kb) swap_used=${sw}KB psi_cpu=$(psi_val cpu some) psi_mem=$(psi_val memory some) psi_io=$(psi_val io some) kswapd_pid=NA"
     fi
+    update_module_desc   # v1.11.0: 每小时随 health_snap 刷新卡片描述（事件点另有即时刷新）
   fi
 
 
@@ -354,6 +357,7 @@ while true; do
   today=$(date '+%Y%m%d')
   if [ "$today" != "$last_tick" ]; then
     last_tick=$today
+    update_module_desc   # v1.11.0: 每日心跳兜底刷新卡片描述（事件驱动点在 cpu_guard/mem_blackbox）
     log "[tick] 存活检查 avail=$(avail_kb)KB"
     incident_cleanup   # v1.6.0: 保留最新 10 个黑匣子快照，老化清理更早的
   fi

@@ -1,6 +1,6 @@
 id=rmg_memtonic
 name=RMG MemTonic 内存与异常守护
-version=v1.10.0
-versionCode=27
+version=v1.11.0
+versionCode=28
 author=deanc
-description=RMG MemTonic 内存守护 (v1.10.0)：内存风暴三件套——mem PSI 60s 连续监测（内建 read 零 fork 零新增唤醒）；连续 2 轮 some≥25 落灾难黑匣子（PSI/meminfo/RSS+majflt Top10，冷却 900s 日限 10）；亮屏风暴级压实例外（psi some≥30 唯一通道，相机/截屏守卫无条件生效，常规亮屏禁压铁律不变）；kswapd>90s/h 顺手压实；前台 majflt 差分指纹预警（转码类负载信号）。v1.9.12 = Rollback 哨兵 + ARG_MAX 全量审计。边界不变：不杀进程/不冻结/不动 zram/不持久内核参数。
+description=RMG MemTonic 内存守护 (v1.11.0)｜启动守护后此处自动更新运行统计：护航·风暴·毒瘤降权·压实·黑匣子·崩溃雷达·地雷告警次数与可用内存/swap/PSI 实时值｜模块详情页可打开 WebUI 状态面板查看完整统计｜内存风暴三件套（v1.10.0）+ 卡片/WebUI 状态展示（v1.11.0）｜边界:不杀进程/不冻结/不动zram/不持久内核参数

@@ -257,6 +257,7 @@ check_dropbox() {
     done < "$DROPBOX_STATE"
     if [ "$new_cnt" -gt "$old_cnt" ]; then
       logx E "event=crash_detected type=$tag new_count=$((new_cnt - old_cnt)) total=$new_cnt"
+      update_module_desc   # v1.11.0: 崩溃雷达即时刷新卡片描述
       changed=1
     fi
   done
@@ -289,6 +290,7 @@ do_fg_compact() {
   echo "$(date +%s)" > "$RUN/last_compact.ts" 2>/dev/null
   if echo 1 > /proc/sys/vm/compact_memory 2>/dev/null; then
     logx W "act=fg_compact psi_mem_some10=${P_S10}% result=ok note=风暴级例外_psi≥$MEM_CMPCT_THRESH_亮屏铁律放行"
+    update_module_desc   # v1.11.0: 压实即时刷新卡片描述
   else
     logx W "act=fg_compact result=fail note=compact_memory写入失败"
   fi

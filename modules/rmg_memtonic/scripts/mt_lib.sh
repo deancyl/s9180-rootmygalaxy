@@ -33,6 +33,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" >/dev/null 2>&1 && pwd)"
 MODDIR="${SCRIPT_DIR%/*}"
 RUN=$MODDIR/run          # 运行时私有目录（root 700）
 LOG=$RUN/memtonic.log    # 审计日志（超 256KB 字节基准截断）
+MODULE_PROP=$MODDIR/module.prop  # v1.11.0: 模块声明文件（卡片描述动态统计的写入目标）
+MT_VERSION=v1.11.0               # v1.11.0: 模块版本（与 module.prop 同步，动态描述引用）
 PIDF=$RUN/memtonic.pid   # 守护进程记录，格式 "pid:进程启动时间"
 GUARD_PIDF=$RUN/guard.pid
 LOCK=$RUN/lock           # 维护互斥锁（mkdir 原子锁，含陈旧锁回收）
@@ -643,6 +645,54 @@ mem_blackbox() {
     rm -f "$old" 2>/dev/null
   done
   logx A "act=mem_blackbox file=${_bb##*/} trigger=$_trig psi_mem_some10=${_s10}%"
+  update_module_desc   # v1.11.0: 黑匣子落盘即时刷新卡片描述
+}
+
+# v1.11.0: collect_stats —— 汇总模块运行统计（key=value 单行，供卡片描述与 WebUI 复用）
+# 计数语义：当前 memtonic.log 周期内（日志超 256KB 基准截断后从零重计）；
+# 读取失败静默降级（计数按 0 处理，不产生错误输出）。
+collect_stats() {
+  _st_pid=$(cat "$PIDF" 2>/dev/null); _st_pid=${_st_pid%%:*}
+  _st_state=stopped
+  case "$_st_pid" in ''|*[!0-9]*) _st_pid=NA;; *) [ -d /proc/$_st_pid ] && _st_state=running;; esac
+  _st_shield=$(grep -c 'event=shield_activate' "$LOG" 2>/dev/null)
+  _st_storm=$(grep -c 'event=storm_start' "$LOG" 2>/dev/null)
+  _st_rogue=$(grep -c 'event=cpu_rogue_intervene\|event=cpu_extreme_intervene' "$LOG" 2>/dev/null)
+  _st_compact=$(grep -c '内存压实完成\|act=fg_compact .*result=ok' "$LOG" 2>/dev/null)
+  _st_blackbox=$(grep -c 'act=mem_blackbox' "$LOG" 2>/dev/null)
+  _st_crash=$(grep -c 'event=crash_detected' "$LOG" 2>/dev/null)
+  _st_rollback=$(grep -c 'event=rollback_disarm' "$LOG" 2>/dev/null)
+  _st_mjburst=$(grep -c 'warn=fg_majflt_burst' "$LOG" 2>/dev/null)
+  for _k in _st_shield _st_storm _st_rogue _st_compact _st_blackbox _st_crash _st_rollback _st_mjburst; do
+    eval "v=\$$_k"; case "$v" in ''|*[!0-9]*) eval "$_k=0";; esac
+  done
+  psi_mem_read || P_S10=NA P_F10=NA
+  echo "state=$_st_state pid=${_st_pid:-NA} shield=$_st_shield storm=$_st_storm rogue=$_st_rogue compact=$_st_compact blackbox=$_st_blackbox crash=$_st_crash rollback=$_st_rollback mjburst=$_st_mjburst avail_kb=$(avail_kb) psi_s10=${P_S10:-NA} psi_f10=${P_F10:-NA}"
+}
+
+# v1.11.0: update_module_desc —— 动态刷新 module.prop description（KSU 管理器卡片简统计）
+# awk 替换 description 行（其余字段原样），写 run/ 临时文件后 mv 原子落位（同文件系统）。
+# 仅写 description 行，version/versionCode 永不触碰（防触发管理器更新误判）。
+update_module_desc() {
+  [ -f "$MODULE_PROP" ] || return 0
+  _cs=$(collect_stats)
+  _state=NA; _pid=NA; _shield=0; _storm=0; _rogue=0; _compact=0; _blackbox=0; _crash=0; _rollback=0; _mjburst=0; _avail=NA; _psis=NA; _psif=NA
+  for kv in $_cs; do
+    k=${kv%%=*}; v=${kv#*=}
+    case "$k" in
+      state) _state=$v;; pid) _pid=$v;; shield) _shield=$v;; storm) _storm=$v;;
+      rogue) _rogue=$v;; compact) _compact=$v;; blackbox) _blackbox=$v;;
+      crash) _crash=$v;; rollback) _rollback=$v;; mjburst) _mjburst=$v;;
+      avail_kb) _avail=$v;; psi_s10) _psis=$v;; psi_f10) _psif=$v;;
+    esac
+  done
+  _avgb=$(( ${_avail:-0} / 1024 )) 2>/dev/null || _avgb=NA
+  _sw=$(awk '/^SwapTotal/{t=$2}/^SwapFree/{f=$2}END{print (t-f)/1024}' /proc/meminfo 2>/dev/null)
+  _swi=${_sw%%.*}; case "$_swi" in ''|*[!0-9]*) _swi=NA;; esac
+  _nd="description=RMG MemTonic 内存守护 ($MT_VERSION)｜守护:${_state}(pid ${_pid})｜⚡本日志周期:护航${_shield}·风暴${_storm}·毒瘤降权${_rogue}·压实${_compact}·黑匣子${_blackbox}·崩溃雷达${_crash}·地雷告警${_rollback}·重负载指纹${_mjburst}｜可用${_avgb}MB·swap${_swi}MB·PSI ${_psis}/${_psif}｜边界:不杀进程/不冻结/不动zram/不持久内核参数"
+  _tmp="$RUN/module.prop.tmp"
+  awk -v nd="$_nd" '/^description=/{print nd; next} {print}' "$MODULE_PROP" > "$_tmp" 2>/dev/null || return 0
+  [ -s "$_tmp" ] && mv "$_tmp" "$MODULE_PROP" 2>/dev/null
 }
 
 # v1.9.11: env_baseline —— 启动环境基线（每会话一次，S 级）
