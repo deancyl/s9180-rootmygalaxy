@@ -1,11 +1,10 @@
-name: ksu-330-dm3q
+name: ksu-331-dm3q
 
 on:
   workflow_dispatch:
 
 env:
   TARGET_RELEASE: 5.15.189-android13-8-33413713-abS9180ZHS8FZG1
-  KSU_VERSION: "32601"
   DDK_IMAGE: ghcr.io/ylarod/ddk-min:android13-5.15-20260828
 
 jobs:
@@ -15,14 +14,16 @@ jobs:
       - name: Checkout this repo (patch file)
         uses: actions/checkout@v4
 
-      - name: Checkout KernelSU v3.3.0 (full history -> version 32601)
+      - name: Checkout KernelSU v3.3.1 (full history -> derive version)
         run: |
-          git clone --branch v3.3.0 https://github.com/tiann/KernelSU ksu
-          git -C ksu rev-list --count HEAD
+          git clone --branch v3.3.1 https://github.com/tiann/KernelSU ksu
+          COUNT=$(git -C ksu rev-list --count HEAD)
+          echo "git rev count = $COUNT -> KSU_VERSION = $((30000 + COUNT))"
+          echo "KSU_VERSION=$((30000 + COUNT))" >> "$GITHUB_ENV"
 
       - name: Apply Samsung KDP/RKP/DEFEX patch
         run: |
-          git -C ksu apply "$GITHUB_WORKSPACE/patch/KernelSU-v3.3.0-samsung-kdp-rkp-defex.patch"
+          git -C ksu apply "$GITHUB_WORKSPACE/KernelSU-v3.3.1-samsung-kdp-rkp-defex.patch"
           echo "patch applied"
 
       - name: Build module in DDK container
@@ -52,13 +53,13 @@ jobs:
       - name: Collect module artifact
         run: |
           mkdir -p out
-          cp ksu/kernel/kernelsu.ko out/android13-5.15_kernelsu-dm3q-S9180ZHS8FZG1-330.ko
+          cp ksu/kernel/kernelsu.ko out/android13-5.15_kernelsu-dm3q-S9180ZHS8FZG1-331.ko
           md5sum out/* | tee out/CHECKSUMS.txt
           cat out/CHECKSUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: kernelsu-330-dm3q-ko
+          name: kernelsu-331-dm3q-ko
           path: out/
 
   ksud:
@@ -68,17 +69,17 @@ jobs:
       - name: Checkout this repo (patch file)
         uses: actions/checkout@v4
 
-      - name: Checkout KernelSU v3.3.0 (patched ksud source)
+      - name: Checkout KernelSU v3.3.1 (patched ksud source)
         uses: actions/checkout@v4
         with:
           repository: tiann/KernelSU
-          ref: v3.3.0
+          ref: v3.3.1
           path: ksu
           fetch-depth: 0
 
       - name: Apply Samsung patch
         run: |
-          git -C ksu apply "$GITHUB_WORKSPACE/patch/KernelSU-v3.3.0-samsung-kdp-rkp-defex.patch"
+          git -C ksu apply "$GITHUB_WORKSPACE/KernelSU-v3.3.1-samsung-kdp-rkp-defex.patch"
           echo "patch applied"
 
       - name: Rewrite dead Kernel-SU org git deps to ReSukiSU mirrors
@@ -95,13 +96,13 @@ jobs:
       - name: Download module artifact
         uses: actions/download-artifact@v4
         with:
-          name: kernelsu-330-dm3q-ko
+          name: kernelsu-331-dm3q-ko
           path: out
 
       - name: Place module as rust_embed late-load asset
         run: |
           mkdir -p ksu/userspace/ksud/bin/aarch64
-          cp out/android13-5.15_kernelsu-dm3q-S9180ZHS8FZG1-330.ko \
+          cp out/android13-5.15_kernelsu-dm3q-S9180ZHS8FZG1-331.ko \
              ksu/userspace/ksud/bin/aarch64/android13-5.15_kernelsu.ko
           ls -l ksu/userspace/ksud/bin/aarch64/
 
@@ -142,11 +143,11 @@ jobs:
           BIN=$(find ksu -type f -path "*release/ksud" -not -path "*/deps/*" | head -1)
           echo "binary: $BIN"
           test -n "$BIN"
-          cp "$BIN" final/ksud-dm3q-S9180ZHS8FZG1-330-kdp
+          cp "$BIN" final/ksud-dm3q-S9180ZHS8FZG1-331-kdp
           md5sum final/* | tee final/CHECKSUMS.txt
           cat final/CHECKSUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ksud-330-dm3q
+          name: ksud-331-dm3q
           path: final/
