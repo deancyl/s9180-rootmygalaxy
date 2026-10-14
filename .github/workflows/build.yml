@@ -84,14 +84,16 @@ jobs:
 
       - name: Rewrite dead Kernel-SU org git deps to ReSukiSU mirrors
         run: |
-          # The Kernel-SU org (adb_client, java-properties, ksu_props, rustix)
-          # no longer exists on GitHub; ReSukiSU mirrors keep the same
-          # revisions (verified: d97a9664 / master / 6f57231 / 4a53fbc).
-          grep -rl "github.com/Kernel-SU/" ksu/userspace/*/Cargo.toml | while read -r f; do
-            sed -i 's|github.com/Kernel-SU/|github.com/ReSukiSU/|g' "$f"
-            echo "rewrote: $f"
-          done
-          grep -n "ReSukiSU" ksu/userspace/ksud/Cargo.toml ksu/userspace/ksuinit/Cargo.toml
+          # Older trees referenced the deleted Kernel-SU org. v3.3.1+ already
+          # uses KernelSU2/ - rewrite only if any stale reference remains.
+          if grep -rq "github.com/Kernel-SU/" ksu/userspace; then
+            grep -rl "github.com/Kernel-SU/" ksu/userspace/*/Cargo.toml | while read -r f; do
+              sed -i 's|github.com/Kernel-SU/|github.com/ReSukiSU/|g' "$f"
+              echo "rewrote: $f"
+            done
+          else
+            echo "no Kernel-SU org references (v3.3.1+ uses KernelSU2/) - nothing to rewrite"
+          fi
 
       - name: Download module artifact
         uses: actions/download-artifact@v4
