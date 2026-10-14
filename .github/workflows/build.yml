@@ -23,7 +23,7 @@ jobs:
 
       - name: Apply Samsung KDP/RKP/DEFEX patch
         run: |
-          git -C ksu apply "$GITHUB_WORKSPACE/KernelSU-v3.3.1-samsung-kdp-rkp-defex.patch"
+          git -C ksu apply "$GITHUB_WORKSPACE/patch/KernelSU-v3.3.1-samsung-kdp-rkp-defex.patch"
           echo "patch applied"
 
       - name: Build module in DDK container
@@ -79,7 +79,7 @@ jobs:
 
       - name: Apply Samsung patch
         run: |
-          git -C ksu apply "$GITHUB_WORKSPACE/KernelSU-v3.3.1-samsung-kdp-rkp-defex.patch"
+          git -C ksu apply "$GITHUB_WORKSPACE/patch/KernelSU-v3.3.1-samsung-kdp-rkp-defex.patch"
           echo "patch applied"
 
       - name: Rewrite dead Kernel-SU org git deps to ReSukiSU mirrors
