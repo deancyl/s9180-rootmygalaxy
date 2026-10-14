@@ -79,7 +79,23 @@ export ANDROID_NDK_HOME=/path/to/android-ndk-r29
    （本地构建脚本已按此收集）。
 5. **不要 `llvm-strip -s` 模块**：加载器读取 `.symtab`，只允许 `-d`（strip debug）。
 
-## 参考构建结果（2026-09-21，GitHub Actions run 35562312156）
+## 参考构建结果
+
+### KernelSU v3.3.1（2026-10-14，run 38583381181，默认）
+
+`patch/KernelSU-v3.3.1-samsung-kdp-rkp-defex.patch`（32680 = 30000 + 2680 git revs）。
+真机验证：Manager 显示工作中 [越狱模式]，内核版本 32680-5，SELinux Enforcing。
+
+| 产物 | 大小 | md5 |
+|---|---|---|
+| `android13-5.15_kernelsu-dm3q-S9180ZHS8FZG1-331.ko` | 424,352 | `84079011a0a8bcf37d5485f7fc03ed7a` |
+| `ksud-dm3q-S9180ZHS8FZG1-331-kdp`（含 --ephemeral） | 5,058,112 | `dc73985df12527125b09c405aea089f2` |
+
+审计（FZG1 vmlinux）：232 undefined / **missing 0** / 0 CRC mismatch / `__versions`=0；
+`do_get_info` 内 `movz w10, #0x7FA8`(32680) 为真实 v3.3.1 代码（v3.3.1 编译器把版本
+装入 w10 而非 v3.3.0 的 x8）。ksud 内嵌模块 raw-deflate @0x143d6 与 .ko 逐字节一致。
+
+### KernelSU v3.3.0（2026-09-21，run 35562312156，历史参考）
 
 | 产物 | 大小 | md5 |
 |---|---|---|

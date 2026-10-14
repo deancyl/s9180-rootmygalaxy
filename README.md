@@ -12,7 +12,8 @@
 | Release | 说明 | 适用人群 |
 |---|---|---|
 | [`v0.2.36-fzg1`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v0.2.36-fzg1) | **原版基线**：上游 0.2.36（已实测可成功临时 root 的版本），内嵌 KernelSU **v3.2.5** | 求稳、只求能用 |
-| [`v0.2.36-ksu330`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v0.2.36-ksu330) | **增强变体**：同一基线，内嵌 ksud 换为 **KernelSU v3.3.0（32601）**，其余逐字节一致 | 想用最新版 KernelSU |
+| [`v0.2.36-ksu331`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v0.2.36-ksu331) | **增强变体（最新）**：同一基线，内嵌 ksud 换为 **KernelSU v3.3.1（32680）**，其余逐字节一致 | 想用最新版 KernelSU（推荐） |
+| [`v0.2.36-ksu330`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v0.2.36-ksu330) | 增强变体：同一基线，内嵌 ksud 换为 **KernelSU v3.3.0（32601）**，其余逐字节一致 | 需要上一代版本 |
 
 两个版本**exploit 链路完全相同**（逐字节一致），区别仅在于 late-load 的 KernelSU 版本。
 
@@ -116,9 +117,10 @@ s9180-rootmygalaxy/
 │       完整变更记录见 modules/rmg_memtonic/CHANGELOG.md
 ├── docs/progress/                               ← 开发进度记录（脱敏）
 ├── patch/
-│   └── KernelSU-v3.3.0-samsung-kdp-rkp-defex.patch
-│       核心成果：将 Samsung KDP/RKP/DEFEX 内核加固适配从 v3.2.5
-│       移植到 KernelSU v3.3.0 源码树（16 文件，干净树上 round-trip 可过）
+│   ├── KernelSU-v3.3.1-samsung-kdp-rkp-defex.patch   ← 最新（v3.3.1 / 32680）
+│   └── KernelSU-v3.3.0-samsung-kdp-rkp-defex.patch   ← 上一代（v3.3.0 / 32601）
+│       核心成果：将 Samsung KDP/RKP/DEFEX 内核加固适配移植到
+│       KernelSU v3.3.x 源码树（16 文件，干净树上 round-trip 可过）
 ├── .github/workflows/
 │   └── build.yml                                ← GitHub Actions 构建流水线
 │       （DDK 容器构建 .ko + NDK r29 交叉编译 ksud，手动触发）
