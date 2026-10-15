@@ -58,6 +58,7 @@
 # 用法：
 #   sh memtonic.sh            守护模式（由 service.sh 拉起，通常不需要手动执行）
 #   sh memtonic.sh once       立即执行一次全套维护（风暴期自动拒绝）
+#   sh memtonic.sh optimize   WebUI 一键系统优化（v1.12.1：Launcher 提权 + 息屏时压实）
 #   sh memtonic.sh status     查看运行状态与最近日志
 #   sh memtonic.sh stop       停止守护循环（所有子进程跟随退出并还原）
 #   sh memtonic.sh guarddry   干跑一轮风暴扫描：只打印将削峰的候选，不做修改
@@ -147,6 +148,38 @@ once)
   ;;
 guarddry)
   guarddry
+  exit 0
+  ;;
+optimize)
+  # v1.12.1: WebUI 一键系统优化（sh memtonic.sh optimize，由 WebUI 启动守护按钮调用）
+  # 遵守 GEMINI 铁律与三条底线：不杀进程/不冻结/不动 zram/不持久内核参数；
+  # 亮屏期间严禁内存压实（防掉帧）——亮屏时仅做 Launcher 提权，息屏时执行全套维护（压实）。
+  if [ -d "$STORM_FLAG" ]; then
+    logx W "event=webui_optimize_rejected reason=storm_active"
+    echo "风暴护栏活动期，优化已拒绝（避免负优化）。"
+    exit 1
+  fi
+  _op_l=0
+  for d in /proc/[0-9]*; do
+    _op_p=${d##*/}
+    _op_u=$(is_app_uid "$_op_p"); [ -n "$_op_u" ] || continue
+    _op_k=$(pkg_of "$_op_p"); [ "$_op_k" = "$LAUNCHER_PKG" ] || continue
+    renice_tree "$_op_p" "$LAUNCHER_NICE" "$_op_k" 0
+    _op_l=$((_op_l+1))
+  done
+  if screen_off; then
+    if maintenance webui_optimize; then _op_c=完成; else _op_c=失败; fi
+  else
+    _op_c=跳过
+    logx W "event=webui_optimize reason=screen_on msg=亮屏严禁压实防掉帧_GEMINI铁律"
+  fi
+  update_module_desc
+  logx A "event=webui_optimize_end avail=$(avail_kb)KB launcher=$_op_l compact=$_op_c"
+  if [ "$_op_c" = "跳过" ]; then
+    echo "系统优化完成：Launcher 提权 ${_op_l} 个进程；内存压实跳过（亮屏防掉帧铁律，息屏后自动按需执行）；当前可用 $(avail_kb)KB。"
+  else
+    echo "系统优化完成：Launcher 提权 ${_op_l} 个进程；内存压实${_op_c}；当前可用 $(avail_kb)KB。"
+  fi
   exit 0
   ;;
 restart)
@@ -247,7 +280,7 @@ if [ -n "$_existing" ] && [ -d "/proc/$_existing" ] && grep -q memtonic /proc/$_
 fi
 check_root_liveness
 echo "$$:$(pid_starttime $$)" > "$PIDF"
-logx E "event=start ver=1.11.0 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
+logx E "event=start ver=1.12.1 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
 
 # 即刻触发一次 Staged Rollback 检测（事前告警，防误重启丢 Root）
 check_staged_rollback

@@ -30,11 +30,16 @@
 # 公共函数与常量抽到本库供两个进程 source，避免复制。
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" >/dev/null 2>&1 && pwd)"
+# v1.12.1: WebUI exec（KernelSU ksu.exec）等 `$0`=shell 自身的上下文 source 本库时，
+# dirname($0) 推导失效（实测 MODDIR 错指 /system → PIDF/LOG 全部指到不存在的
+# /system/run/ → WebUI 显示"已停止(pid NA)/计数全 0"）。派生目录不含本库时
+# 回落到模块固定安装路径；常规执行/被本模块脚本 source 的路径不受影响。
+[ -f "$SCRIPT_DIR/mt_lib.sh" ] || SCRIPT_DIR=/data/adb/modules/rmg_memtonic/scripts
 MODDIR="${SCRIPT_DIR%/*}"
 RUN=$MODDIR/run          # 运行时私有目录（root 700）
 LOG=$RUN/memtonic.log    # 审计日志（超 256KB 字节基准截断）
 MODULE_PROP=$MODDIR/module.prop  # v1.11.0: 模块声明文件（卡片描述动态统计的写入目标）
-MT_VERSION=v1.11.0               # v1.11.0: 模块版本（与 module.prop 同步，动态描述引用）
+MT_VERSION=v1.12.1               # v1.12.1: 模块版本（与 module.prop 同步，动态描述引用）
 PIDF=$RUN/memtonic.pid   # 守护进程记录，格式 "pid:进程启动时间"
 GUARD_PIDF=$RUN/guard.pid
 LOCK=$RUN/lock           # 维护互斥锁（mkdir 原子锁，含陈旧锁回收）
@@ -43,6 +48,7 @@ RLST=/data/local/tmp/memtonic_storm_renice.lst  # 还原清单（tid 原nice 设
 ZRAM=/sys/block/zram0
 CAMERA_ACTIVE_FLAG="$RUN/camera_active.flag"   # Camera Sentinel 状态锁（相机活跃期间存在）
 CAMERA_VIP_BAK="$RUN/camera_vip.bak"           # Camera Sentinel nice 备份（用于退出无损还原）
+CAMERA_AFF_BAK="$RUN/camera_aff.bak"           # v1.12.0: 相机 provider 核亲和备份（tid 原mask，退出还原）
 SCREENSHOT_ACTIVE_FLAG="$RUN/screenshot_active.flag" # Screenshot Sentinel 状态锁（截屏处理期间存在）
 SCREENSHOT_END_TS="$RUN/screenshot_end.ts"           # Screenshot Sentinel 超时时间戳
 ROLLBACK_WARNED_TS="$RUN/rollback_warned.ts"         # Fix-D: staged_rollback 告警去重时间戳
@@ -436,27 +442,39 @@ storm_window() {
 #   3. GEMINI.md 铁律：若进程已享有高于 -10 的优先级，跳过（严禁反向降级）。
 # v1.9.10: 记录每个目标的 renice 结果（实测 cameraserver nice=0 → renice 后仍=0，
 #   疑被 Android SchedulingPolicy 服务拉回；记录 actual_nice 供审计判定是否生效）。
+# v1.12.0: find_camera_provider —— provider 定位抽为独立函数（camera_vip_on 与核亲和共用）
+# 两段式：先精确匹配三星硬件 ISP provider，再兜底任意 camera.provider。
+# 输出 provider pid（找不到输出空串）。
+find_camera_provider() {
+  _fcp_pid=""
+  for d in /proc/[0-9]*; do
+    cmd=$(strings "$d/cmdline" 2>/dev/null | head -n 1)
+    case "$cmd" in *samsung.hardware.camera.provider*|*samsung*camera-provider*)
+      _fcp_pid=${d##*/}; break;; esac
+  done
+  if [ -z "$_fcp_pid" ]; then
+    for d in /proc/[0-9]*; do
+      cmd=$(strings "$d/cmdline" 2>/dev/null | head -n 1)
+      case "$cmd" in *camera.provider*|*camera-provider*)
+        _fcp_pid=${d##*/}; break;; esac
+    done
+  fi
+  echo "$_fcp_pid"
+}
+
+# camera_vip_on: 相机激活时提权 cameraserver 与 HAL provider（严格遵守增量语义）
+# 设计约束：
+#   1. 通过 cmdline 匹配 provider PID，避免 comm 截断问题；
+#   2. 备份各进程原始 nice 到 $CAMERA_VIP_BAK，用于退出时精确还原；
+#   3. GEMINI.md 铁律：若进程已享有高于 -10 的优先级，跳过（严禁反向降级）。
+# v1.9.10: 记录每个目标的 renice 结果（实测 cameraserver nice=0 → renice 后仍=0，
+#   疑被 Android SchedulingPolicy 服务拉回；记录 actual_nice 供审计判定是否生效）。
+# v1.12.0: provider 定位改用 find_camera_provider（行为与原两段式逐字一致）。
 camera_vip_on() {
   : > "$CAMERA_VIP_BAK" 2>/dev/null
   # 定位 cameraserver（pgrep 精确匹配进程名）
   cs_pid=$(pgrep -x cameraserver 2>/dev/null | head -n 1)
-  # 定位 vendor camera provider（通过 cmdline 匹配，避免 comm 截断 15 字节问题）
-  # v1.9.7: 优先匹配三星硬件 ISP provider——实测通配 *camera.provider* 会先命中
-  # USB 外置摄像头驱动（PID 1768），而 2 亿像素/8K 运算真正的 provider 是
-  # vendor.samsung.hardware.camera.provider-service_64。两段式：先精确后兜底。
-  prov_pid=""
-  for d in /proc/[0-9]*; do
-    cmd=$(strings "$d/cmdline" 2>/dev/null | head -n 1)
-    case "$cmd" in *samsung.hardware.camera.provider*|*samsung*camera-provider*)
-      prov_pid=${d##*/}; break;; esac
-  done
-  if [ -z "$prov_pid" ]; then
-    for d in /proc/[0-9]*; do
-      cmd=$(strings "$d/cmdline" 2>/dev/null | head -n 1)
-      case "$cmd" in *camera.provider*|*camera-provider*)
-        prov_pid=${d##*/}; break;; esac
-    done
-  fi
+  prov_pid=$(find_camera_provider)
   for pid in $cs_pid $prov_pid; do
     case "$pid" in ''|*[!0-9]*) continue;; esac
     [ -d "/proc/$pid" ] || continue
@@ -495,6 +513,102 @@ camera_vip_off() {
   done < "$CAMERA_VIP_BAK"
   rm -f "$CAMERA_VIP_BAK" 2>/dev/null
   logx A "act=camera_vip_off msg=相机底层服务优先级已无损还原"
+}
+
+# =========================================================
+# v1.12.0: 相机大核亲和（FR-C2）+ 蓝牙音频守卫辅助（FR-BT）
+# =========================================================
+
+# camera_affinity_on: 相机激活时把 provider 全部线程绑到大核簇（cpu3-7, mask f8）
+# 背景：连拍时 CPU 饱和（PSI cpu some 可达 89%），provider 线程在小核排队 =
+# 取景/编码卡顿；提权(-10)不解决排布问题。
+# 内核语义：sched_setaffinity(pid) 只作用于单线程 → 必须逐 tid 设置。
+# 可逆：逐 tid 记录原始 mask 到 $CAMERA_AFF_BAK，退出时逐 tid 还原。
+# 安全性：仅移动线程不改变优先级/不杀进程；taskset 缺失或失败静默降级。
+camera_affinity_on() {
+  [ -x /system/bin/taskset ] || { logx W "err=affinity_no_taskset msg=taskset不可用_跳过核绑定"; return 0; }
+  prov_pid=$(find_camera_provider)
+  case "$prov_pid" in ''|*[!0-9]*) return 0;; esac
+  [ -d "/proc/$prov_pid" ] || return 0
+  : > "$CAMERA_AFF_BAK" 2>/dev/null
+  _caf_n=0
+  for t in /proc/$prov_pid/task/[0-9]*; do
+    tid=${t##*/}
+    # tr 替代 awk tolower（toybox awk 对 tolower 支持不保证）；taskset 输出 mask 位于 $6
+    _caf_orig=$(taskset -p "$tid" 2>/dev/null | awk '{print $6}' | tr 'A-F' 'a-f')
+    case "$_caf_orig" in ''|*[!0-9a-f]*) continue;; esac
+    [ "$_caf_orig" = "f8" ] && continue
+    echo "$tid $_caf_orig" >> "$CAMERA_AFF_BAK" 2>/dev/null
+    taskset -p f8 "$tid" >/dev/null 2>&1 && _caf_n=$((_caf_n+1))
+  done
+  if [ "$_caf_n" -gt 0 ]; then
+    logx A "act=camera_affinity_on pid=$prov_pid threads=$_caf_n mask=f8 msg=相机provider已绑定大核簇cpu3-7"
+  else
+    logx W "err=camera_affinity_zero msg=无线程成功绑定_检查taskset语义"
+  fi
+}
+
+# camera_affinity_off: 相机退出时逐 tid 还原原始核亲和 mask
+camera_affinity_off() {
+  [ -s "$CAMERA_AFF_BAK" ] || return 0
+  _cao_n=0
+  while read -r tid orig; do
+    case "$tid" in ''|*[!0-9]*) continue;; esac
+    case "$orig" in ''|*[!0-9a-f]*) continue;; esac
+    [ -d "/proc/$tid" ] || continue
+    taskset -p "$orig" "$tid" >/dev/null 2>&1 && _cao_n=$((_cao_n+1))
+  done < "$CAMERA_AFF_BAK"
+  rm -f "$CAMERA_AFF_BAK" 2>/dev/null
+  logx A "act=camera_affinity_off restored=$_cao_n msg=相机provider核亲和已无损还原"
+}
+
+# v1.12.0: bt_stack_cpu <pid> —— BT 栈 CPU jiffies（utime+stime）写入全局 BT_JF（零 fork）
+# mksh 内建 read 直读 /proc/pid/stat：comm 无空格（com.android.blu）→ IFS 拆分第 14/15 字段。
+# 读失败或字段异常置 BT_JF="" 并 return 1。
+bt_stack_cpu() {
+  BT_JF=""
+  IFS=' ' read -r _bj1 _bj2 _bj3 _bj4 _bj5 _bj6 _bj7 _bj8 _bj9 _bj10 _bj11 _bj12 _bj13 _bj14 _bj15 < "/proc/$1/stat" 2>/dev/null || return 1
+  case "${_bj14:-}${_bj15:-}" in ''|*[!0-9]*) return 1;; esac
+  BT_JF=$((_bj14 + _bj15))
+  return 0
+}
+
+# bt_guard_boost: BT 栈/HAL/audioserver 逐线程提权至 -8（差分记录到 $RUN/bt_guard.bak）
+# 内核语义：renice(pid=tgid) 只改主线程 → A2DP/HFP 编码线程须逐 tid 提权。
+# GEMINI 铁律：已高于 -8 的线程跳过（严禁反向降级）。
+bt_guard_boost() {
+  : > "$RUN/bt_guard.bak" 2>/dev/null
+  _bgb_n=0
+  for tgt in "$1" "$2" "$3"; do
+    case "$tgt" in ''|*[!0-9]*) continue;; esac
+    [ -d "/proc/$tgt" ] || continue
+    for t in /proc/$tgt/task/[0-9]*; do
+      tid=${t##*/}
+      on=$(nice_of "$tid")
+      case "$on" in ''|*[!0-9-]*) continue;; esac
+      [ "$on" -le -8 ] && continue
+      renice -n $((-8 - on)) -p "$tid" >/dev/null 2>&1 || continue
+      echo "$tid $on" >> "$RUN/bt_guard.bak" 2>/dev/null
+      _bgb_n=$((_bgb_n+1))
+    done
+  done
+  logx A "act=bt_guard_on threads=$_bgb_n nice=-8 msg=蓝牙音频栈已提权_抗CPU争抢"
+}
+
+# bt_guard_restore: 逐 tid 差分还原（复用 camera_vip_off 的防累加模式）
+bt_guard_restore() {
+  [ -s "$RUN/bt_guard.bak" ] || return 0
+  _bgr_n=0
+  while read -r tid orig; do
+    case "$tid" in ''|*[!0-9]*) continue;; esac
+    case "$orig" in ''|*[!0-9-]*) continue;; esac
+    [ -d "/proc/$tid" ] || continue
+    cur=$(nice_of "$tid")
+    case "$cur" in ''|*[!0-9-]*) continue;; esac
+    renice -n $((orig - cur)) -p "$tid" >/dev/null 2>&1 && _bgr_n=$((_bgr_n+1))
+  done < "$RUN/bt_guard.bak"
+  rm -f "$RUN/bt_guard.bak" 2>/dev/null
+  logx A "act=bt_guard_off restored=$_bgr_n msg=蓝牙音频栈优先级已无损还原"
 }
 
 # incident_cleanup：保留最新 10 个黑匣子快照，删除更早的文件（防磁盘无限堆积）
@@ -663,11 +777,12 @@ collect_stats() {
   _st_crash=$(grep -c 'event=crash_detected' "$LOG" 2>/dev/null)
   _st_rollback=$(grep -c 'event=rollback_disarm' "$LOG" 2>/dev/null)
   _st_mjburst=$(grep -c 'warn=fg_majflt_burst' "$LOG" 2>/dev/null)
-  for _k in _st_shield _st_storm _st_rogue _st_compact _st_blackbox _st_crash _st_rollback _st_mjburst; do
+  _st_bt=$(grep -c 'act=bt_guard_on' "$LOG" 2>/dev/null)
+  for _k in _st_shield _st_storm _st_rogue _st_compact _st_blackbox _st_crash _st_rollback _st_mjburst _st_bt; do
     eval "v=\$$_k"; case "$v" in ''|*[!0-9]*) eval "$_k=0";; esac
   done
   psi_mem_read || P_S10=NA P_F10=NA
-  echo "state=$_st_state pid=${_st_pid:-NA} shield=$_st_shield storm=$_st_storm rogue=$_st_rogue compact=$_st_compact blackbox=$_st_blackbox crash=$_st_crash rollback=$_st_rollback mjburst=$_st_mjburst avail_kb=$(avail_kb) psi_s10=${P_S10:-NA} psi_f10=${P_F10:-NA}"
+  echo "state=$_st_state pid=${_st_pid:-NA} shield=$_st_shield storm=$_st_storm rogue=$_st_rogue compact=$_st_compact blackbox=$_st_blackbox crash=$_st_crash rollback=$_st_rollback mjburst=$_st_mjburst bt=$_st_bt avail_kb=$(avail_kb) psi_s10=${P_S10:-NA} psi_f10=${P_F10:-NA}"
 }
 
 # v1.11.0: update_module_desc —— 动态刷新 module.prop description（KSU 管理器卡片简统计）
@@ -676,20 +791,20 @@ collect_stats() {
 update_module_desc() {
   [ -f "$MODULE_PROP" ] || return 0
   _cs=$(collect_stats)
-  _state=NA; _pid=NA; _shield=0; _storm=0; _rogue=0; _compact=0; _blackbox=0; _crash=0; _rollback=0; _mjburst=0; _avail=NA; _psis=NA; _psif=NA
+  _state=NA; _pid=NA; _shield=0; _storm=0; _rogue=0; _compact=0; _blackbox=0; _crash=0; _rollback=0; _mjburst=0; _bt=0; _avail=NA; _psis=NA; _psif=NA
   for kv in $_cs; do
     k=${kv%%=*}; v=${kv#*=}
     case "$k" in
       state) _state=$v;; pid) _pid=$v;; shield) _shield=$v;; storm) _storm=$v;;
       rogue) _rogue=$v;; compact) _compact=$v;; blackbox) _blackbox=$v;;
-      crash) _crash=$v;; rollback) _rollback=$v;; mjburst) _mjburst=$v;;
+      crash) _crash=$v;; rollback) _rollback=$v;; mjburst) _mjburst=$v;; bt) _bt=$v;;
       avail_kb) _avail=$v;; psi_s10) _psis=$v;; psi_f10) _psif=$v;;
     esac
   done
   _avgb=$(( ${_avail:-0} / 1024 )) 2>/dev/null || _avgb=NA
   _sw=$(awk '/^SwapTotal/{t=$2}/^SwapFree/{f=$2}END{print (t-f)/1024}' /proc/meminfo 2>/dev/null)
   _swi=${_sw%%.*}; case "$_swi" in ''|*[!0-9]*) _swi=NA;; esac
-  _nd="description=RMG MemTonic 内存守护 ($MT_VERSION)｜守护:${_state}(pid ${_pid})｜⚡本日志周期:护航${_shield}·风暴${_storm}·毒瘤降权${_rogue}·压实${_compact}·黑匣子${_blackbox}·崩溃雷达${_crash}·地雷告警${_rollback}·重负载指纹${_mjburst}｜可用${_avgb}MB·swap${_swi}MB·PSI ${_psis}/${_psif}｜边界:不杀进程/不冻结/不动zram/不持久内核参数"
+  _nd="description=RMG MemTonic 内存守护 ($MT_VERSION)｜守护:${_state}(pid ${_pid})｜⚡本日志周期:护航${_shield}·风暴${_storm}·毒瘤降权${_rogue}·压实${_compact}·黑匣子${_blackbox}·崩溃雷达${_crash}·地雷告警${_rollback}·重负载指纹${_mjburst}·蓝牙护航${_bt}｜可用${_avgb}MB·swap${_swi}MB·PSI ${_psis}/${_psif}｜边界:不杀进程/不冻结/不动zram/不持久内核参数"
   _tmp="$RUN/module.prop.tmp"
   awk -v nd="$_nd" '/^description=/{print nd; next} {print}' "$MODULE_PROP" > "$_tmp" 2>/dev/null || return 0
   [ -s "$_tmp" ] && mv "$_tmp" "$MODULE_PROP" 2>/dev/null

@@ -1,20 +1,44 @@
 #!/system/bin/sh
-# fluency_shield.sh —— RMG MemTonic 前台绝对护盾 (FR-9) + Camera Sentinel + Screenshot Sentinel (v1.10.0)
+# fluency_shield.sh —— RMG MemTonic 前台绝对护盾 (FR-9) + Camera Sentinel + Screenshot Sentinel + BT Sentinel (v1.12.0)
 # FR-9：PSI 内存压力飙升时精准提权前台渲染链（SurfaceFlinger + 主线程 + RenderThread）。
 # FR-C Camera Sentinel：每 5 秒嗅探 media.camera，相机激活时提权 HAL 服务。
 # FR-S Screenshot Sentinel：监控截屏目录文件数，截屏后 30 秒内对前台 App 提权防卡顿。
+# FR-BT BT Sentinel (v1.12.0)：蓝牙音频流活跃且（相机活跃或 PSI≥8%）时，BT 栈/HAL/audioserver
+#   逐线程提权至 -8，防 CPU 争抢下 A2DP/HFP 环形缓冲欠载（爆音/断联）。
 #
 # Fix-B: renice 还原使用差值计算（orig - cur），消除原始值被当 increment 累加的经典 Bug。
 # Fix-E: 护盾退出后 5 秒冷却防抖，防 PSI 持续高企时连续重触发。
 # v1.10.0: 同步版本号（v1.10.0 发布遗漏，自审补齐——v1.9.12 立下的版本串一致性规矩）。
+# v1.11.0: 再次同步版本号（v1.11.0 发布时本文件版本串漏改，2026-10-12 取证时发现补齐）。
+# v1.12.0: FR-BT 蓝牙音频守卫（流检测+条件提权+3 tick 防抖还原）+ FR-C2 相机 provider 大核亲和（cpu3-7，退出还原）。
 . "$(dirname "$0")/mt_lib.sh"
 
 echo $$ > "$RUN/fluencyshield.pid"
-logx E "event=fluency_shield_start ver=1.10.0 msg=FR-9+CameraSentinel(focus)+ScreenshotSentinel已开启"
+logx E "event=fluency_shield_start ver=1.12.1 msg=FR-9+CameraSentinel(focus)+ScreenshotSentinel+BTSentinel已开启"
 
 is_boosting=0
 shield_cooldown_until=0   # Fix-E: 护盾冷却截止时间戳
 cam_state=0               # Camera Sentinel 状态机：0=无相机 1=相机活跃
+
+# FR-BT (v1.12.0): BT Sentinel 状态机
+bt_state=0                # 0=未护航 1=护航中
+bt_miss=0                 # 条件消失计数（连续 3 tick 才还原，防抖）
+bt_last_jf=0              # 上次采样 CPU jiffies（首 tick 只建基线）
+bt_last_pid=""            # 上次 BT 栈 pid（变化才重扫 HAL）
+bt_hal_pid=""             # 缓存的 BT HAL pid（避免每 tick 全盘扫 cmdline）
+bt_cooldown_until=0       # 还原后 30s 冷却
+
+# v1.12.0: HZ 归一化——jiffies 增量阈值必须除以真实时钟频率（内核 CONFIG_HZ 100/250 皆可能）
+bt_clk=$(getconf CLK_TCK 2>/dev/null)
+case "$bt_clk" in ''|*[!0-9]*) bt_clk=100;; esac
+if [ "$bt_clk" -lt 1 ] 2>/dev/null; then bt_clk=100; fi
+bt_last_ts=0              # 上次采样 uptime 秒（归一化分母）
+
+# 启动自愈：上一实例死于提权中残留的 bak → 先无损还原
+# （若相机/蓝牙音频此刻正活跃，本轮循环会立刻检测到并重新提权，语义无损）
+camera_vip_off 2>/dev/null
+camera_affinity_off 2>/dev/null
+bt_guard_restore 2>/dev/null
 
 # FR-S: 截屏目录初始化（尝试多个常见路径）
 sc_dir=""
@@ -44,6 +68,7 @@ while true; do
     cam_state=1
     touch "$CAMERA_ACTIVE_FLAG" 2>/dev/null
     camera_vip_on
+    camera_affinity_on   # v1.12.0 FR-C2: provider 逐线程绑大核簇 cpu3-7（退出还原）
     logx A "act=camera_sentinel_on msg=相机已激活_HAL服务已提权"
 
   elif [ "$cam_now" -eq 0 ] && [ "$cam_state" -eq 1 ]; then
@@ -51,7 +76,83 @@ while true; do
     cam_state=0
     rm -f "$CAMERA_ACTIVE_FLAG" 2>/dev/null
     camera_vip_off
+    camera_affinity_off   # v1.12.0 FR-C2: 逐 tid 还原原始核亲和 mask
     logx A "act=camera_sentinel_off msg=相机已退出前台_HAL服务优先级已还原"
+  fi
+
+  # =========================================================
+  # FR-BT BT Sentinel (v1.12.0)
+  # 检测：com.android.bluetooth 的单核 CPU 占比（jiffies 增量按 uptime 时间差与
+  #   CLK_TCK 归一化）> 5% 判音频流活跃（A2DP 编码/HFP）；首 tick 只建基线。
+  # 触发：音频流活跃 且（相机活跃 或 PSI some ≥ 8%）→ 逐线程提权 -8。
+  # 还原：条件连续消失 3 tick（~15s）→ 差分还原 + 30s 冷却防抖。
+  # 重启：护航中 BT 栈重启（pid 变化）→ 立即重新护航（消除新进程裸奔窗口）。
+  # 功耗纪律：完全搭既有 5s 循环便车（零新增唤醒）；每 tick 仅 1 次 pidof fork，
+  #   stat/PSI/uptime 读取全部 mksh 内建 read（零 fork）。
+  # =========================================================
+  bt_now_cond=0
+  _btp=$(pidof com.android.bluetooth 2>/dev/null)
+  _btp=${_btp%% *}
+  case "$_btp" in ''|*[!0-9]*) _btp="";; esac
+  if [ -n "$_btp" ]; then
+    if [ "$_btp" != "$bt_last_pid" ]; then
+      # BT 栈重启（pid 变化）：失效 HAL 缓存并重扫；jiffies/时间基线重建
+      bt_last_pid=$_btp; bt_hal_pid=""; bt_last_jf=0; bt_last_ts=0
+      for d in /proc/[0-9]*; do
+        _bth_cmd=$(strings "$d/cmdline" 2>/dev/null | head -n 1)
+        case "$_bth_cmd" in android.hardware.bluetooth@*) bt_hal_pid=${d##*/}; break;; esac
+      done
+      # 护航中栈重启 → 立即重新护航（旧 bak 内 tid 已死，boost 内部截断 bak 无损）
+      if [ "$bt_state" -eq 1 ]; then
+        _as=$(pidof audioserver 2>/dev/null); _as=${_as%% *}
+        bt_guard_boost "$_btp" "$bt_hal_pid" "$_as"
+      fi
+    fi
+    bt_stack_cpu "$_btp"
+    read -r _up _ < /proc/uptime 2>/dev/null
+    _up=${_up%%.*}
+    case "$_up" in ''|*[!0-9]*) _up=$bt_last_ts;; esac
+    bt_stream=0
+    if [ -n "$BT_JF" ] && [ "$bt_last_jf" -gt 0 ] && [ "$_up" -gt "$bt_last_ts" ]; then
+      # 阈值 = 时间差 × CLK_TCK × 3%（单核占比；SBC 编码可低至 3-4%，5% 会漏检；
+      # 误检良性——触发还需叠加相机/PSI 条件）；系统卡顿拉长 tick 时自动等比放大
+      _thr=$(( (_up - bt_last_ts) * bt_clk * 3 / 100 ))
+      [ $((BT_JF - bt_last_jf)) -gt "$_thr" ] && bt_stream=1
+    fi
+    bt_last_jf=${BT_JF:-$bt_last_jf}
+    bt_last_ts=$_up
+    if [ "$bt_stream" -eq 1 ]; then
+      # PSI some avg10（mksh read 零 fork）：15.52% → psi_int=1552（阈值 800 = 8%）
+      IFS=' ' read -r _ps1 _ps2 _ < /proc/pressure/memory 2>/dev/null
+      _psi_x=${_ps2#avg10=}
+      _psi_i=${_psi_x%%.*}; _psi_f=${_psi_x#*.}
+      case "${_psi_i:-}${_psi_f:-}" in ''|*[!0-9]*) _psi_i=0; _psi_f=0;; esac
+      psi_int=$((_psi_i * 100 + _psi_f))
+      if [ "$cam_state" -eq 1 ] || [ "$psi_int" -ge 800 ]; then
+        bt_now_cond=1
+      fi
+    fi
+  else
+    # BT 栈不存在（蓝牙关闭/重启窗口）：清缓存与基线
+    bt_last_pid=""; bt_hal_pid=""; bt_last_jf=0; bt_last_ts=0
+  fi
+
+  if [ "$bt_now_cond" -eq 1 ]; then
+    bt_miss=0
+    if [ "$bt_state" -eq 0 ] && [ "$(date +%s)" -ge "$bt_cooldown_until" ]; then
+      bt_state=1
+      _as=$(pidof audioserver 2>/dev/null); _as=${_as%% *}
+      bt_guard_boost "$_btp" "$bt_hal_pid" "$_as"
+    fi
+  else
+    if [ "$bt_state" -eq 1 ]; then
+      bt_miss=$((bt_miss + 1))
+      if [ "$bt_miss" -ge 3 ]; then
+        bt_state=0; bt_miss=0
+        bt_guard_restore
+        bt_cooldown_until=$(($(date +%s) + 30))
+      fi
+    fi
   fi
 
   # =========================================================

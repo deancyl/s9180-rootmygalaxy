@@ -2,6 +2,41 @@
 
 ---
 
+## [v1.12.1] - 2026-10-15
+### Fixed
+- **WebUI 状态读取根因修复**：`mt_lib.sh` 以 `dirname($0)` 推导模块目录，在 KernelSU WebUI exec（`. mt_lib.sh; collect_stats`）上下文中 `$0` 为 shell 自身 → `MODDIR` 错指 `/system` → pid/日志全部落空，面板恒显「已停止(pid NA)/计数全 0」。修复：派生目录不含本库时回落到模块固定安装路径；常规执行与被守护脚本 source 的路径零影响。真机回归：WebUI 同路径返回 `state=running` + 真实 pid 与计数，跨真实重启稳定。
+
+### Added
+- **`memtonic.sh optimize` 一键系统优化**（WebUI「启动守护+优化」按钮调用）：风暴期拒绝；Launcher 逐进程 `renice_tree` 提权（与风暴护栏同参数）；息屏时执行全套维护（内存压实），亮屏时按 GEMINI 铁律跳过压实（防掉帧）并如实提示；`webui_optimize/_end` 审计行落盘。
+- **WebUI 守护启停控制**：状态卡新增「▶ 启动守护+优化 / ■ 停止守护」按钮，执行结果 stdout/stderr 回显（成功绿/失败红）；操作期间暂停 30s 自动刷新防结果被清。
+
+### 边界（不变）
+不杀进程 / 不冻结 / 不动 zram / 不持久内核参数 / 亮屏严禁压实。
+
+---
+
+## [v1.12.0] - 2026-10-14
+### Added（FR-BT + FR-C2，源自 10-13 晚相机连拍卡顿 + 蓝牙爆音取证）
+- **FR-BT 蓝牙音频守卫（BT Sentinel）**：BT 栈 5s CPU jiffies 增量按 `getconf CLK_TCK` 归一化判流活跃（阈值 3% 单核）；相机活跃或 PSI≥8% 时对 BT 栈/HAL/audioserver **逐线程** renice -8（内核语义：renice(taskgid) 只作用主线程）；3 tick 防抖还原 + 30s 冷却；护航中 BT 栈重启立即重护航。GEMINI 铁律：已高于 -8 的线程跳过。
+- **FR-C2 相机 provider 大核亲和**：provider 全部线程 `taskset f8`（cpu3-7，SM8550 中核+prime），备份原始 mask 退出逐 tid 无损还原；与 Camera Sentinel 同生命周期。
+- **零功耗纪律**：检测搭 fluency_shield 既有 5s 循环便车，`bt_stack_cpu` 用 mksh 内建 read 直读 `/proc/pid/stat`（零 fork），每 tick 仅 1 次 pidof fork；亲和仅相机会话期存在。
+- **启动自愈**：启动时先无损还原上一实例可能残留的 bak（提权中途死亡的防御闭环）。
+
+### Fixed（部署前自审 4 项）
+- jiffies 阈值未按 HZ 归一化（250Hz 内核空闲即误触发）→ `CLK_TCK` 实测归一；
+- toybox awk `tolower` 依赖 → `tr 'A-F' 'a-f'` 替代；
+- 护航中 BT 栈重启新进程裸奔 → pid 变化立即重护航；
+- mask 备份读取字段校验加固。
+
+---
+
+## [v1.11.0] - 2026-10-10
+### Added（状态可视化）
+- **卡片动态统计**：`collect_stats`（key=value 单行）+ `update_module_desc`（awk 原位替换 description 行，run/ 临时文件 mv 原子落位；version/versionCode 永不触碰）——事件驱动 + 每小时 + 每日心跳三类刷新点。
+- **KernelSU WebUI 状态面板**：`webroot/index.html`（exec 兼容层 + 8 张统计卡 + PSI 进度条 + 黑匣子/incident 列表）。
+
+---
+
 ## [v1.10.0] - 2026-10-10
 ### Added（内存风暴三件套，源自 2026-10-09 Synology Photos 转码事故取证）
 - **P1-1 mem PSI 连续监测**：`psi_mem_read` 挂载 cpu_guard 60s 轮——mksh 内建 `read` 复合重定向零 fork（真机实测 fork 版 `cat` 9.35ms/次 → 内建 <0.5ms），零新增唤醒源。常态静默，仅超阈记日志。
