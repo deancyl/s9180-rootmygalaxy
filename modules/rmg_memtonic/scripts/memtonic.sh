@@ -214,6 +214,8 @@ stop)
   pkill -9 -f fluency_shield.sh 2>/dev/null
   rm -f "$PIDF" "$GUARD_PIDF" "$RUN/cpuguard.pid" "$RUN/fluencyshield.pid" "$RUN/vk_injected.flag"
   # P2 Camera Sentinel 清场
+  flush_guard_restore 2>/dev/null
+  bt_guard_restore 2>/dev/null
   rm -f "$RUN/camera_active.flag" "$RUN/camera_vip.bak" 2>/dev/null
   # Screenshot Sentinel 清场
   rm -f "$SCREENSHOT_ACTIVE_FLAG" "$SCREENSHOT_END_TS" "$RUN/screenshot_fg.bak" 2>/dev/null

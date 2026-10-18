@@ -1,21 +1,30 @@
 #!/system/bin/sh
-# fluency_shield.sh —— RMG MemTonic 前台绝对护盾 (FR-9) + Camera Sentinel + Screenshot Sentinel + BT Sentinel (v1.12.0)
-# FR-9：PSI 内存压力飙升时精准提权前台渲染链（SurfaceFlinger + 主线程 + RenderThread）。
-# FR-C Camera Sentinel：每 5 秒嗅探 media.camera，相机激活时提权 HAL 服务。
-# FR-S Screenshot Sentinel：监控截屏目录文件数，截屏后 30 秒内对前台 App 提权防卡顿。
-# FR-BT BT Sentinel (v1.12.0)：蓝牙音频流活跃且（相机活跃或 PSI≥8%）时，BT 栈/HAL/audioserver
+# fluency_shield.sh —— RMG MemTonic 前台护盾 (FR-9) + Camera Sentinel + Screenshot Sentinel + BT Sentinel + FR-C3 Flush Sentinel (v1.12.5)
+# FR-9: PSI 内存压力飙升时精准提权前台渲染链（SurfaceFlinger + 主线程 + RenderThread）。
+# FR-C Camera Sentinel: 每 5 秒嗅探 media.camera，相机激活时提权 HAL 服务。
+# FR-S Screenshot Sentinel: 监控截屏目录文件数，截屏后 30 秒内对前台 App 提权防卡顿。
+# FR-BT BT Sentinel (v1.12.0): 蓝牙音频流活跃且（相机活跃或 PSI≥8%）时，BT 栈/HAL/audioserver
 #   逐线程提权至 -8，防 CPU 争抢下 A2DP/HFP 环形缓冲欠载（爆音/断联）。
 #
 # Fix-B: renice 还原使用差值计算（orig - cur），消除原始值被当 increment 累加的经典 Bug。
 # Fix-E: 护盾退出后 5 秒冷却防抖，防 PSI 持续高企时连续重触发。
-# v1.10.0: 同步版本号（v1.10.0 发布遗漏，自审补齐——v1.9.12 立下的版本串一致性规矩）。
-# v1.11.0: 再次同步版本号（v1.11.0 发布时本文件版本串漏改，2026-10-12 取证时发现补齐）。
-# v1.12.0: FR-BT 蓝牙音频守卫（流检测+条件提权+3 tick 防抖还原）+ FR-C2 相机 provider 大核亲和（cpu3-7，退出还原）。
+# v1.10.0: 同步版本号。
+# v1.11.0: 再次同步版本号。
+# v1.12.0: FR-BT 蓝牙音频守卫 + FR-C2 相机 provider 大核亲和。
+# v1.12.2: FR-C3 face-service Flush Sentinel——face-service 借相机身份在拥堵窗口快速开关相机
+#   ID 4 时，provider 在 CamX::flush 等结果超时触发内部 raise 取证 dump（10-16 四连发取证）。
+#   检测：face-service 存活 + provider 任意 tid 处于 D 状态 → 临时给两端逐线程 renice -8，
+#   退出 30s 冷却。与 FR-C2 互补（FR-C2 护相机 App 前台，FR-C3 护 face 服务借相机）。
+# v1.12.5: FR-BT2 低成本蓝牙 GATT/LE 在系统内存压力下的护栈哨兵（RayNeo 观察期）。
 . "$(dirname "$0")/mt_lib.sh"
-
 echo $$ > "$RUN/fluencyshield.pid"
-logx E "event=fluency_shield_start ver=1.12.1 msg=FR-9+CameraSentinel(focus)+ScreenshotSentinel+BTSentinel已开启"
+logx E "event=fluency_shield_start ver=1.12.5 msg=FR-9+CameraSentinel+ScreenshotSentinel+BTSentinel+FR-C3FlushSentinel已开启"
 
+flush_state=0
+flush_ts=0
+flush_cooldown_until=0
+FLUSH_COOLDOWN=30
+FR_C3_MAX=15
 is_boosting=0
 shield_cooldown_until=0   # Fix-E: 护盾冷却截止时间戳
 cam_state=0               # Camera Sentinel 状态机：0=无相机 1=相机活跃
@@ -39,6 +48,7 @@ bt_last_ts=0              # 上次采样 uptime 秒（归一化分母）
 camera_vip_off 2>/dev/null
 camera_affinity_off 2>/dev/null
 bt_guard_restore 2>/dev/null
+flush_guard_restore 2>/dev/null
 
 # FR-S: 截屏目录初始化（尝试多个常见路径）
 sc_dir=""
@@ -155,6 +165,83 @@ while true; do
     fi
   fi
 
+  # =========================================================
+  # FR-C3 + FR-BT2 probe tick (v1.12.5)
+  # Tick 0（每 20 秒）: 查询 face-service/provider 与 RayNeo 前台服务频次。
+  # FR-C3 判定: face-service 存活 + provider 任意线程 D 状态 → 临时提权。
+  # FR-BT2 判定: RayNeo 应用存活 + mem PSI some avg10 ≥5 → 临时提权。
+  # FR-BT2 (v1.12.5)：RayNeo GATT/LE 场景下的低成本蓝牙栈护航。
+  # 触发：RayNeo 前台服务在最近 100 条系统日志里重复启动 ≥2 次 + mem PSI some avg10 ≥5。
+  # 还原：PSI some avg10 < 3% 连续 2 tick，或者 BT 栈/HAL 消失。
+  # =========================================================
+  bt2_now_cond=0
+  _frc3_tick=$((_frc3_tick + 1))
+  if [ "$_frc3_tick" -ge 4 ]; then
+    _frc3_tick=0
+    _frc3_face_str=$(find_face_service_pid 2>/dev/null)
+    _frc3_face=${_frc3_face_str%% *}
+    # Find the provider only when face-service is actually alive.  The old
+    # per-tick /proc walk broke the "zero fork" discipline every 5 seconds.
+    if [ -n "$_frc3_face" ]; then
+      _frc3_prov=$(find_camera_provider 2>/dev/null)
+    fi
+    bt2_probe_rayneo
+  fi
+  # FR-C3 state machine: refresh the probe every 20s, but run restore checks
+  # each tick so a lingering boost cannot outlive the 15s ceiling.
+  _frc3_now=0
+  if [ -n "$_frc3_face" ] && [ -n "$_frc3_prov" ]; then
+    for _frc3_t in /proc/$_frc3_prov/task/*/stat; do
+      _frc3_state=$(awk '{sub(/^[0-9]+ \([^)]*\) /,""); print $1}' "$_frc3_t" 2>/dev/null)
+      [ "$_frc3_state" = "D" ] && { _frc3_now=1; break; }
+    done
+  fi
+  if [ "$_frc3_now" -eq 1 ] && [ "$flush_state" -eq 0 ] && [ "$(date +%s)" -ge "$flush_cooldown_until" ]; then
+    flush_state=1
+    flush_ts=$(date +%s)
+    flush_guard_boost "$_frc3_face" "$_frc3_prov"
+  elif [ "$flush_state" -eq 1 ]; then
+    _frc3_t2=$(date +%s)
+    if [ "$_frc3_now" -eq 0 ] || [ $((_frc3_t2 - flush_ts)) -ge "$FR_C3_MAX" ]; then
+      flush_state=0
+      flush_guard_restore
+      flush_cooldown_until=$((_frc3_t2 + FLUSH_COOLDOWN))
+    fi
+  fi
+  if bt2_should_boost; then
+    bt2_now_cond=1
+  fi
+  if [ "$bt2_now_cond" -eq 1 ]; then
+    bt2_miss=0
+    if [ "$bt2_state" -eq 0 ]; then
+      bt2_state=1
+      _btp2=$(pidof com.android.bluetooth 2>/dev/null); _btp2=${_btp2%% *}
+      _bth2=""
+      [ -n "$_btp2" ] && { _btp2=${_btp2%% *}; }
+      [ -n "$_btp2" ] || _btp2=""
+      _ash2=$(pidof audioserver 2>/dev/null); _ash2=${_ash2%% *}
+      if [ -n "$_btp2" ]; then
+        for d in /proc/[0-9]*; do
+          _bth2_cmd=$(strings "$d/cmdline" 2>/dev/null | head -n 1)
+          case "$_bth2_cmd" in android.hardware.bluetooth@*) _bth2=${d##*/}; break;; esac
+        done
+      fi
+      if [ -n "$_btp2" ]; then
+        bt_guard_boost "$_btp2" "$_bth2" "$_ash2"
+        logx A "act=bt2_guard_on trigger=rayneo_gatt psi_mem=$bt2_psi msg=LE/GATT压力护航"
+      fi
+    fi
+  else
+    if [ "$bt2_state" -eq 1 ]; then
+      bt2_miss=$((bt2_miss + 1))
+      if [ "$bt2_miss" -ge 2 ]; then
+        bt2_state=0; bt2_miss=0
+        bt_guard_restore
+        bt2_cooldown_until=$(($(date +%s) + 30))
+        logx A "act=bt2_guard_off psi_mem=$bt2_psi msg=压力回落_蓝牙栈还原"
+      fi
+    fi
+  fi
   # =========================================================
   # FR-S Screenshot Sentinel
   # 通过文件数变化检测新截屏，O(1)，无 dumpsys/pgrep 开销

@@ -31,6 +31,11 @@ if [ -s "$RLST" ]; then
   done < "$RLST"
 fi
 
+# Source the runtime constants/files early so flush_guard_restore can find
+# $RUN/flush_guard.bak before the run directory is removed.
+. "$MODDIR/scripts/mt_lib.sh" 2>/dev/null
+flush_guard_restore 2>/dev/null
+
 
 # 3. 删除运行时文件与历史遗留
 rm -rf "$MODDIR/run"

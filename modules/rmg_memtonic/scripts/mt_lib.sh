@@ -39,7 +39,7 @@ MODDIR="${SCRIPT_DIR%/*}"
 RUN=$MODDIR/run          # 运行时私有目录（root 700）
 LOG=$RUN/memtonic.log    # 审计日志（超 256KB 字节基准截断）
 MODULE_PROP=$MODDIR/module.prop  # v1.11.0: 模块声明文件（卡片描述动态统计的写入目标）
-MT_VERSION=v1.12.1               # v1.12.1: 模块版本（与 module.prop 同步，动态描述引用）
+MT_VERSION=v1.12.5               # v1.12.5: 模块版本（与 module.prop 同步，动态描述引用）
 PIDF=$RUN/memtonic.pid   # 守护进程记录，格式 "pid:进程启动时间"
 GUARD_PIDF=$RUN/guard.pid
 LOCK=$RUN/lock           # 维护互斥锁（mkdir 原子锁，含陈旧锁回收）
@@ -462,6 +462,58 @@ find_camera_provider() {
   echo "$_fcp_pid"
 }
 
+# v1.12.5: FR-BT2 —— 低成本蓝牙 LE/GATT 健康哨兵
+# 触发语义：com.rayneo.venus.pub 应用存活（有 LE/GATT 通道调用方）+ PSI some avg10 >= 5%
+#   → BT 栈/HAL/audioserver 逐线程提权 -8；PSI 回落<3% continuous 2 tick 后还原 +30s cooldown。
+# 证据：10-17 22:47+ RayNeo GATT direct connect 反复 30s HCI_ERR_HOST_TIMEOUT，
+#   此时主 FR-BT 条件不满足（A2DP idle、BT 栈 CPU<3%、PSI CPU 16-25%）。FR-BT2 覆盖这个盲区。
+bt2_state=0
+bt2_miss=0
+bt2_cooldown_until=0
+bt2_gatt_win=0
+
+bt2_should_boost() {
+  if [ "$(date +%s)" -lt "$bt2_cooldown_until" ]; then return 1; fi
+  [ -n "$(pidof com.rayneo.venus.pub 2>/dev/null)" ] || return 1
+  [ "$bt2_gatt_win" -ge 2 ] && return 0
+  bt2_psi=$(psi_val memory some)
+  bt2_step=${bt2_psi%%.*}
+  case "$bt2_step" in ''|*[!0-9]*) return 1;; esac
+  [ "$bt2_step" -ge 5 ]
+}
+
+bt2_probe_rayneo() {
+  _btpc=$(logcat -d -v brief -t 100 2>/dev/null | grep -c 'RayneoForegroundService')
+  case "$_btpc" in ''|*[!0-9]*) _btpc=0;; esac
+  bt2_gatt_win=$_btpc
+}
+
+find_face_service_pid() {
+  pidof vendor.samsung.hardware.biometrics.face-service 2>/dev/null
+}
+
+# v1.12.5: system_server 堆压快照（内存 OOM 软重启的前哨）
+# 用法：ss_heap_probe <触发日志标签>
+# 江湖规则：只在堆超阈值或有压力时落盘，避免每次都拉 dumpsys 打进日志。
+ss_heap_probe() {
+  _trig=$1
+  [ -n "$_trig" ] || _trig=manual
+  _ss=$(pidof system_server 2>/dev/null); _ss=${_ss%% *}
+  [ -n "$_ss" ] || return 0
+  _heap=$(dumpsys meminfo system_server 2>/dev/null | awk '/Total PSS|Dalvik Heap/{print}' | head -n 4)
+  case "$_heap" in ''|'') return 0;; esac
+  case "$_heap" in *'Dalvik Heap'*) ;; *) return 0;; esac
+  _dalvik=$(echo "$_heap" | awk '/Dalvik Heap/{for(i=1;i<=NF;i++)if($i~/^[0-9]+$/){print $i;exit}}')
+  case "$_dalvik" in ''|*[!0-9]*) return 0;; esac
+  if [ "$_dalvik" -ge $((300*1024)) ]; then
+    _ssbb="$RUN/ssheap-$(date '+%Y%m%d_%H%M%S').log"
+    echo "# MemTonic ssheap _trigger=$_trig _ts=$(date '+%m-%d %H:%M:%S')" > "$_ssbb"
+    echo "$_heap" >> "$_ssbb"
+    dumpsys meminfo system_server 2>/dev/null | head -n 120 >> "$_ssbb"
+    logx A "act=ss_heap_probe trigger=$_trig dalvik_kb=$_dalvik path=$(basename "$_ssbb")"
+  fi
+}
+
 # camera_vip_on: 相机激活时提权 cameraserver 与 HAL provider（严格遵守增量语义）
 # 设计约束：
 #   1. 通过 cmdline 匹配 provider PID，避免 comm 截断问题；
@@ -611,6 +663,44 @@ bt_guard_restore() {
   logx A "act=bt_guard_off restored=$_bgr_n msg=蓝牙音频栈优先级已无损还原"
 }
 
+# flush_guard_boost: face-service 相机会话期间 provider/caller 逐线程提权至 -8（差分记录到 $RUN/flush_guard.bak）
+# 背景（2026-10-16 四连发取证）：face-service (uid 1000) 反复在拥堵期 connect→disconnect
+#   camera ID 4，provider 在 flush 等结果时 CPU/IO 争抢超时，触发 CamX 内部 raise 取证 dump。
+# 与 FR-C2 互补：FR-C2 只在相机 App 前台时护 provider；FR-C3 护"face-service 借相机"窗口。
+# GEMINI 铁律：已高于 -8 的线程跳过。
+flush_guard_boost() {
+  : > "$RUN/flush_guard.bak" 2>/dev/null
+  _fgb_n=0
+  for tgt in "$1" "$2"; do
+    case "$tgt" in ""|*[!0-9]*) continue;; esac
+    [ -d "/proc/$tgt" ] || continue
+    for t in /proc/$tgt/task/[0-9]*; do
+      tid=${t##*/}
+      on=$(nice_of "$tid")
+      case "$on" in ""|*[!0-9-]*) continue;; esac
+      [ "$on" -le -8 ] && continue
+      renice -n $((-8 - on)) -p "$tid" >/dev/null 2>&1 || continue
+      echo "$tid $on" >> "$RUN/flush_guard.bak" 2>/dev/null
+      _fgb_n=$((_fgb_n+1))
+    done
+  done
+  logx A "act=flush_guard_on threads=$_fgb_n nice=-8 msg=face服务借相机_provided已提权"
+}
+# flush_guard_restore: 逐 tid 差分还原（复用 bt_guard_restore 防累加模式）
+flush_guard_restore() {
+  [ -s "$RUN/flush_guard.bak" ] || return 0
+  _fgr_n=0
+  while read -r tid orig; do
+    case "$tid" in ""|*[!0-9]*) continue;; esac
+    case "$orig" in ""|*[!0-9-]*) continue;; esac
+    [ -d "/proc/$tid" ] || continue
+    cur=$(nice_of "$tid")
+    case "$cur" in ""|*[!0-9-]*) continue;; esac
+    renice -n $((orig - cur)) -p "$tid" >/dev/null 2>&1 && _fgr_n=$((_fgr_n+1))
+  done < "$RUN/flush_guard.bak"
+  rm -f "$RUN/flush_guard.bak" 2>/dev/null
+  logx A "act=flush_guard_off restored=$_fgr_n msg=face服务借相机_优先级已无损还原"
+}
 # incident_cleanup：保留最新 10 个黑匣子快照，删除更早的文件（防磁盘无限堆积）
 incident_cleanup() {
   cnt=$(ls "$RUN"/incident-*.log 2>/dev/null | wc -l)
@@ -701,29 +791,29 @@ psi_mem_read() {
   return 0
 }
 
-# v1.10.0: fg_majflt_sum —— top-app 全部 pid 的 majflt 累计和（P2 重负载指纹）
-# 单次 awk：读 cgroup v1 tasks 列表 + getline 逐 pid 取 /proc/pid/stat 的 majflt（去 comm 后第 10 字段）。
-# 转码/媒体导入类负载的指纹 = 前台 majflt 增速暴涨（2026-10-09 Synology 实测 18,486 major faults）。
-# cgroup 不存在或无 pid 时输出空（调用方按 NA 处理）。
+# v1.12.2: fg_majflt_sum —— 单次 awk 读取 top-app 全部线程（cgroup tasks）的 majflt 累计和。
+# top-app 任务列表来自 /dev/cpuset/top-app/tasks，每行 tid，含主线程和线程。
+# 每 tid 读 /proc/<tid>/stat，去 comm 后第 10 字段（procfs 原始字段 11）=majflt。
+# cgroup 不存在或 tasks 为空时 return 1（调用方按 NA 处理）。
 fg_majflt_sum() {
+  local _path="$1"
+  [ -n "$_path" ] || _path=/dev/cpuset/top-app/tasks
+  [ -r "$_path" ] || return 1
   awk '
-    { pids[++n] = $1 }
-    END {
-      if (NR == 0) { print ""; exit }
-      total = 0
-      for (i = 1; i <= n; i++) {
-        while ((getline line < ("/proc/" pids[i] "/stat")) > 0) {
-          sub(/^[0-9]+ \([^)]*\) /, "", line)
-          split(line, f, " ")
-          total += f[10] + 0
-          break
-        }
+    {
+      tid=$1
+      mf=0
+      while ((getline line < ("/proc/" tid "/stat")) > 0) {
+        sub(/^[0-9]+ \([^)]*\) /, "", line)
+        split(line, f, " ")
+        mf = f[10] + 0
+        break
       }
-      print total
+      total += mf
     }
-  ' /dev/cpuset/top-app/tasks 2>/dev/null
+    END { print total+0 }
+  ' "$_path" 2>/dev/null
 }
-
 # v1.10.0: mem_blackbox —— 灾难快照落盘（黑匣子，触发式稀有事件）
 # 用法：mem_blackbox <trigger> <some10> <some60> <full10>
 # L1 内容（PSI 三项 + avail/swap + kswapd）+ L2 内容（单次 /proc/[0-9]*/stat 遍历
@@ -771,8 +861,8 @@ collect_stats() {
   case "$_st_pid" in ''|*[!0-9]*) _st_pid=NA;; *) [ -d /proc/$_st_pid ] && _st_state=running;; esac
   _st_shield=$(grep -c 'event=shield_activate' "$LOG" 2>/dev/null)
   _st_storm=$(grep -c 'event=storm_start' "$LOG" 2>/dev/null)
-  _st_rogue=$(grep -c 'event=cpu_rogue_intervene\|event=cpu_extreme_intervene' "$LOG" 2>/dev/null)
-  _st_compact=$(grep -c '内存压实完成\|act=fg_compact .*result=ok' "$LOG" 2>/dev/null)
+  _st_rogue=$(grep -cE 'event=cpu_rogue_intervene|event=cpu_extreme_intervene' "$LOG" 2>/dev/null)
+  _st_compact=$(grep -cE '内存压实完成|act=fg_compact .*result=ok' "$LOG" 2>/dev/null)
   _st_blackbox=$(grep -c 'act=mem_blackbox' "$LOG" 2>/dev/null)
   _st_crash=$(grep -c 'event=crash_detected' "$LOG" 2>/dev/null)
   _st_rollback=$(grep -c 'event=rollback_disarm' "$LOG" 2>/dev/null)

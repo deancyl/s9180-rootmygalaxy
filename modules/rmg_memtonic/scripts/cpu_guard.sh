@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# cpu_guard.sh -- RMG MemTonic CPU 失常护栏 + 崩溃雷达（v1.9.9）
+# cpu_guard.sh -- RMG MemTonic CPU 失常护栏 + 崩溃雷达（v1.12.2）
 # FR-4: 白名单/前台焦点/桌面/前台服务/top-app cgroup 豁免（FR-11）；风暴期暂停干预。
 # FR-5: 旁路监听 dropbox 文件计数，检测 App 崩溃与 ANR。
 # FR-11: top-app cgroup 豁免（微信截图处理等合法 CPU 密集工作不应被惩罚）。
@@ -335,14 +335,14 @@ mem_probe() {
   fi
 
   # P2: 前台 majflt 差分指纹（转码/媒体导入类负载预警，10min 限频）
-  _fm=$(fg_majflt_sum)
+  _fm=$(fg_majflt_sum 2>/dev/null)
   if [ -n "$_fm" ] && [ -n "$_fg_mflt_prev" ]; then
-    _fd=$((_fm - _fg_mflt_prev))
-    [ "$_fd" -lt 0 ] && _fd=0   # PID 复用/重启防负值
+    _fd=$(($_fm - _fg_mflt_prev))
+    [ "$_fd" -lt 0 ] && _fd=0   # PID 身份变更/进程更换顶部 cgroup 时窗口差分可能为负，防负值归零
     if [ "$_fd" -ge "$FG_MFLT_RATE" ]; then
       _now=$(date +%s)
       if [ $((_now - _fg_mflt_warn_ts)) -ge 600 ]; then
-        logx W "warn=fg_majflt_burst rate=${_fd}/60s total=$_fm note=前台重负载指纹_转码类_关注进程存活"
+        logx W "warn=fg_majflt_burst rate=${_fd}/60s total=$_fm note=前台重负载指纹_单 pid 集合窗内差分"
         _fg_mflt_warn_ts=$_now
       fi
     fi

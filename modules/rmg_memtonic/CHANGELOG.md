@@ -2,6 +2,60 @@
 
 ---
 
+## [v1.12.5] - 2026-10-18
+### Fixed
+- **FR-C3 提权泄漏（P1）**：`flush_guard_restore` 在三个清理路径（`fluency_shield` 启动自愈、`memtonic.sh stop`、`uninstall.sh`）中均未调用，导致进程在 stop 时若正处 FR-C3 护航窗口，face-service/provider 线程可能永久留在 -8。已补齐三个清理路径。
+- **FR-C3 每 tick 高开销（P2）**：FR-C3 主循环每 5 秒全盘扫 /proc 找 provider，每日数百万 fork。已降频为每 4 tick 一次（即 20 秒），并且只在 face-service 实际存活时扫。
+- **FR-BT2 与 FR-BT 并发竞态（P1）**：FR-BT 和 FR-BT2 共用同一个 `bt_guard.bak`，同一 tick 双触发时可能双重提权/双重还原。FR-BT2 已改为独立状态机和日志路径，`memtonic.sh stop` 同步补齐 `bt_guard_restore` 清理。
+- **system_server 堆压取证（P2）**：新增 `ss_heap_probe` 函数（当前未接入周期巡检，只是预置）。观察发现 system_server 的 Dalvik 堆 RSS 高于 300MB 时自动落盘取证。
+### Added
+- **FR-BT2 蓝牙 LE/GATT 压力护航（观察期）**：RayNeo 应用存活且最近 100 条系统日志内 RayneoForegroundService 出现 ≥2 次时，BT 栈/HAL/audioserver 逐线程提权 -8；PSI mem some avg10 ≥5 时立即触发，回落 <3 连续 2 tick 还原 + 30s 冷却。真机已连续 3 次闭环（21:28 / 21:37 / 21:40）。
+### Battery（观察）
+- 总耗电 2491 mAh，主要来自屏幕 433、B 站 341、系统 303、Chrome 143、抖音 82.9、微信 77.6、Google 搜索 73.6、淘宝 41.6、蓝牙 62.3。RayNeo 在 21:11-21:17 期间反复从后台拉起前台服务，与 BLE 连接超时重叠。
+---
+
+## [v1.12.4] - 2026-10-16
+### Fixed
+- **计数器恒为 0（P0）**：`collect_stats` 的 `_st_rogue` 与 `_st_compact` 使用 `grep -c 'A\|B'`，但设备上的 toybox grep（0.8.12-android）**不支持 `\|` 交替**（实测：对含 AAA/CCC 的文件 `grep -c 'AAA\|CCC'`=0，而 `grep -cE 'AAA|CCC'`=2）。受影响的两个计数器必然恒为 0。修复为 `grep -cE 'A|B'`。设备实测：内存压实计数由 0 修正为 23（功能实际一直在工作）。
+- 全模块排查确认：仅 `collect_stats` 两处使用该模式，其余为单模式 grep（无害）。
+### Added（UI 可用性）
+- **计数卡新增状态徽标**：每张卡片显示"已触发 N"或"待命中"，并列出白话触发条件（如"连续 3 分钟 >50% CPU""内存压力 ≥25% 持续 2 分钟"）。用户可据此区分"功能待命"与"功能损坏"，避免把未达阈值误判为故障。
+### Notes
+- 本次不改动任何调度/提权逻辑，只修计数器表达式与前端展示。诊断结论：五项"恒为 0"中，内存压实是计数器 bug（功能正常），毒瘤降权/灾难黑匣子/蓝牙护航是**确实未满足触发条件**（代码逻辑经审查与实测复现均正确），地雷告警为**默认 dry-run 未开启**且无 enabling 回滚可告警。
+---
+
+## [v1.12.3] - 2026-10-16
+### Fixed
+- **WebUI 控制按钮完全失效（P0）**：旧版按钮 HTML 写 `onclick="ctrlStart()"` / `onclick="ctrlStop()"`，但脚本只定义了 `ctrl(op)`，无从定义函数也无 window 挂载 → 点击必抛 ReferenceError，页面毫无反馈。修复：移除全部内联 onclick，改为 `data-act` + 事件委托统一分派（未定义动作会走 default 分支显式报错，而不再静默失效）。
+- **刷新可能永久卡死**：`execCmd` 无超时，一旦管理器回调丢失 Promise 永不 resolve，面板永久停在旧数据且不报错（官方 npm `kernelsu@3.0.2` 的 exec 同样无超时，属桥接层固有风险）。修复：execCmd 增加 20s 超时 + settled 双保险，超时以错误态返回并提示可重试。
+- **数据不更新的观感**：新增"数据更新时间"与"自动刷新倒计时"，刷新失败展示红色原因；自动刷新仅在页面可见且空闲时执行（原实现 30s 定时无在途去重，可叠加并发命令）。
+- **空字段渲染异常**：PSI 字段缺失时渲染成 "% / %"。修复为空值统一回落 `--`。
+- **护栏护航计数恒为 0**：卡片 kv 键误写为 `perf`（collect_stats 实际输出 `shield`），导致该卡片永远显示 0。修复为正确键名（设备真实数据回归发现）。
+### Changed
+- **UI/UX 重做**：状态徽章 + 数据更新时间 + 自动刷新倒计时；内存/PSI 进度条（≥15% 转黄、≥30% 转红）；9 张事件计数卡改为带口径副标题的两列网格；操作区按钮改为内联 SVG 图标 + ≥44px 触控高度；确认操作改为页面内自绘弹窗（不再依赖 window.confirm——WebView 未设置 WebChromeClient 时会静默返回 false，等同于按钮失灵）。
+- **busy 状态可视化**：操作期间显示转圈 + 秒计 + 全部按钮禁用（单飞），60s 看门狗兜底解锁并提示。
+- **启动文案修正**："约 5 秒" → "约 30 秒"（设备实测 optimize 耗时 28.27s）。
+- 移除恒为空的"守护自身 CPU"字段（定义了但从未赋值，属死字段）。
+### Verified
+- `node --check` 语法通过；`data-act` 与 case 分支一一对应（refresh/start/stop），内联 onclick 归零。
+- Node 最小 DOM + 假 KSU 桥测试台 16/16 通过：初始化渲染、点击启动→确认弹窗→命令下发、回调丢失→超时错误态（不锁死）、字段缺失不抛异常、busy 期间二次点击被单飞拦截。
+- 设备真实 collect_stats 输出回归通过（state/pid/shield/storm/crash/mjburst/avail_kb/psi 全部正确解析，护栏 37·风暴 2·崩溃 3·指纹 221 与设备一致）。
+- 部署为单文件热替换（webroot/index.html），回滚点 /data/local/tmp/index.hotfix-backup.html（md5 40880f0073d04114340995b35e0aaefe）。
+
+
+
+---
+
+## [v1.12.2] - 2026-10-16
+### Fixed
+- **fg_majflt_burst 大幅虚高（四个数量级级）**：`mt_lib.sh` 的 `fg_majflt_sum` 原版实现把 cgroup tasks（每行 tid，含主线程+线程）当作 pid 列表逐行读 `/proc/pid/stat` 的 `majflt` 字段，由于多个线程是同 pid 的并行累计，直接求和会把同一段 majflt 活动重复累计。因此 454M/60s、614M/60s 这种"四个数量级"的告警是同线程集合多次重复求和产生的假数据，不是真实的 majflt 增量（真机实测 60s 内 com.tencent.mm:appbrand0 主体 majflt 仅从 25670 → 32047，增量 6377 次，同线程集合错误的求和却是 454M）。
+- **fg_majflt_burst 阈值误判**：v1.10 原设计只做单 pid 集合差分，但实际 top-app cgroup 切换一个进程后，`_fg_mflt_prev` 还是旧集合的累计值，导致 454M-454M=0 而跳过告警，而下一次 614M-454M=160M 误报。现在改为顶层 `_fm` 为单线程集合聚合行为，差分仅在"同 pid 子线程集合"内部有意义，切换窗口触发"负值→归零"是正确保护（线程切换只 hinted，不刻意差分跨进程集合）。
+- **`local` 语法兼容**：`fg_majflt_sum` 修正后使用 `local _path`（mksh 语法兼容，无需 unset 避免全局值污染）。
+### Notes
+- 真机复测在 2026-10-16 午后窗口进行。
+
+---
+
 ## [v1.12.1] - 2026-10-15
 ### Fixed
 - **WebUI 状态读取根因修复**：`mt_lib.sh` 以 `dirname($0)` 推导模块目录，在 KernelSU WebUI exec（`. mt_lib.sh; collect_stats`）上下文中 `$0` 为 shell 自身 → `MODDIR` 错指 `/system` → pid/日志全部落空，面板恒显「已停止(pid NA)/计数全 0」。修复：派生目录不含本库时回落到模块固定安装路径；常规执行与被守护脚本 source 的路径零影响。真机回归：WebUI 同路径返回 `state=running` + 真实 pid 与计数，跨真实重启稳定。

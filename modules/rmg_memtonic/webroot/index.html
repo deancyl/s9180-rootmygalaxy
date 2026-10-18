@@ -6,167 +6,390 @@
 <title>MemTonic 状态面板</title>
 <style>
   :root{
-    --bg:#111318;--card:#1b1e25;--card2:#22262f;--tx:#e8eaf0;--tx2:#9aa1ad;
-    --ok:#4ade80;--warn:#fbbf24;--err:#f87171;--acc:#5b9cf5;--line:#2b303b;
+    --bg:#121417;--card:#1b1f24;--card2:#22262f;--tx:#e8eaf0;--tx2:#9aa6b2;--line:#2b303b;
+    --ok:#4ade80;--warn:#fbbf24;--err:#f87171;--acc:#5b9cf5;
   }
   *{box-sizing:border-box;margin:0;padding:0}
-  body{background:var(--bg);color:var(--tx);font:14px/1.5 -apple-system,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;padding:14px 12px 28px;max-width:640px;margin:0 auto}
+  body{background:var(--bg);color:var(--tx);font:14px/1.55 -apple-system,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;padding:14px 12px 28px;max-width:640px;margin:0 auto}
   h1{font-size:17px;margin:2px 0 2px}
-  .sub{color:var(--tx2);font-size:12px;margin-bottom:12px}
-  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-bottom:12px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
-  .card .n{font-size:22px;font-weight:700}
-  .card .t{color:var(--tx2);font-size:11px;margin-top:2px}
-  .row{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line);font-size:13px}
-  .row:last-child{border-bottom:none}
-  .row .k{color:var(--tx2)}
-  .state-running{color:var(--ok);font-weight:700}
-  .state-stopped{color:var(--err);font-weight:700}
-  .bar{height:6px;border-radius:3px;background:var(--card2);overflow:hidden;margin-top:4px}
-  .bar i{display:block;height:100%;border-radius:3px}
-  .hint{background:var(--card);border:1px solid var(--err);border-radius:12px;padding:14px;color:var(--err);font-size:13px;margin-top:10px}
-  .note{color:var(--tx2);font-size:11px;margin-top:10px}
-  #refresh{background:var(--acc);color:#fff;border:none;border-radius:10px;padding:8px 18px;font-size:13px;margin:4px 0 12px}
-  .btn2{background:var(--acc);color:#fff;border:none;border-radius:8px;padding:6px 12px;font-size:12px;margin-left:6px}
-  .btn2:disabled{opacity:.45}
-  .btn2.warn{background:var(--err)}
-  .list{font-size:12px;color:var(--tx2)}
+  .sub{color:var(--tx2);font-size:12px;margin-bottom:10px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px}
+  .card h2{font-size:13px;color:var(--tx2);margin-bottom:8px;font-weight:600}
+  .kvrow{display:flex;justify-content:space-between;align-items:center;padding:5px 0;font-size:13px}
+  .kvrow .k{color:var(--tx2)}
+  .kvrow b{font-weight:600}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:8px}
+  .n{font-size:21px;font-weight:700;line-height:1.2}
+  .t{color:var(--tx2);font-size:11px;margin-top:2px}
+  .badge{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600}
+  .b-ok{background:#14351f;color:#58d97a}
+  .b-warn{background:#3a2a10;color:#f0b84a}
+  .b-err{background:#3d1414;color:#f26d6d}
+  .b-mut{background:#232a32;color:#9aa6b2}
+  .bar{height:6px;border-radius:3px;background:var(--card2);overflow:hidden;margin-top:6px}
+  .bar i{display:block;height:100%;border-radius:3px;transition:width .3s}
+  button{display:inline-flex;align-items:center;justify-content:center;gap:6px;background:#232a32;color:var(--tx);border:1px solid #2f3944;border-radius:8px;min-height:44px;padding:10px 12px;font-size:13px;cursor:pointer}
+  button:active{background:#2c3540}
+  button:disabled{opacity:.45;cursor:default}
+  button.accent{border-color:#2b4d6b;color:#7cc4f2}
+  button.danger{border-color:#6b2b2b;color:#f29393}
+  button svg{width:15px;height:15px;flex:0 0 auto}
+  .btns{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .btns .wide{grid-column:span 2}
+  #busybar{display:none;align-items:center;gap:10px;background:#14263a;border:1px solid #24425f;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:13px;color:#7cc4f2}
+  #busybar.on{display:flex}
+  .spin{width:14px;height:14px;border:2px solid #24425f;border-top-color:#7cc4f2;border-radius:50%;animation:mtspin .8s linear infinite;flex:0 0 auto}
+  @keyframes mtspin{to{transform:rotate(360deg)}}
+  #msg{font-size:12.5px;white-space:pre-wrap;margin-top:8px}
+  .list{font-size:12px;color:var(--tx2);word-break:break-all}
+  .hint{color:#66707b;font-size:11px;margin-top:8px}
+  #mask{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;padding:20px;z-index:50}
+  #mask.on{display:flex}
+  #dlg{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;max-width:420px;width:100%}
+  #dlg p{font-size:13px;white-space:pre-wrap;margin-bottom:14px}
+  .dlgbtns{display:flex;gap:8px;justify-content:flex-end}
 </style>
 </head>
 <body>
 <h1>MemTonic 状态面板</h1>
 <div class="sub" id="ver">RMG MemTonic 内存与异常守护</div>
-<button id="refresh" onclick="render()">↻ 刷新</button>
-<div id="content"><div class="hint">正在加载…</div></div>
-<div class="note">计数语义：当前 memtonic.log 日志周期内（日志超 256KB 截断后从零重计）。黑匣子文件位于 /data/adb/modules/rmg_memtonic/run/。</div>
+
+<div id="busybar"><span class="spin"></span><span id="busytxt">处理中…</span></div>
+
+<div class="card" style="padding:10px 14px">
+  <div class="kvrow"><span class="k">守护状态</span><span id="st_state">--</span></div>
+  <div class="kvrow"><span class="k">数据更新时间</span><span id="st_ts">--</span></div>
+  <div class="kvrow"><span class="k">自动刷新</span><span id="st_next">--</span></div>
+</div>
+
+<div id="errbox" class="card" style="display:none;border-color:var(--err)">
+  <div class="list" id="e_txt" style="color:var(--err)"></div>
+</div>
+
+<div class="card">
+  <h2>内存与压力</h2>
+  <div class="kvrow"><span class="k">可用内存</span><b id="st_avail">--</b></div>
+  <div class="kvrow"><span class="k">mem PSI some / full (avg10)</span><b id="st_psi">--</b></div>
+  <div class="bar"><i id="psi_bar" style="width:0%;background:var(--ok)"></i></div>
+</div>
+
+<div class="card">
+  <h2>事件计数（本日志周期）</h2>
+  <div class="grid" id="cards"></div>
+  <div class="hint" id="logcycle">计数口径：本日志周期内累计；日志超过 256KB 自动截断后从零重新计数。</div>
+</div>
+
+<div class="card">
+  <h2>守护操作</h2>
+  <div class="btns">
+    <button class="accent wide" data-act="start">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+      启动守护并优化
+    </button>
+    <button class="wide danger" data-act="stop">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+      停止守护
+    </button>
+    <button class="wide" data-act="refresh">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
+      刷新数据
+    </button>
+  </div>
+  <div id="msg"></div>
+</div>
+
+<div class="card">
+  <h2>最近快照</h2>
+  <div class="kvrow"><span class="k">灾难黑匣子</span></div>
+  <div class="list" id="bb">--</div>
+  <div class="kvrow" style="margin-top:8px"><span class="k">框架重启 incident</span></div>
+  <div class="list" id="inc">--</div>
+  <div class="hint">文件位于 /data/adb/modules/rmg_memtonic/run/</div>
+</div>
+
+<div class="hint">安全边界：不杀进程 / 不冻结 / 不动 zram / 不持久修改内核参数；所有提权均逐线程且可无损还原。</div>
+
+<div id="mask"><div id="dlg"><p id="dtxt"></p><div class="dlgbtns"><button data-dlg="cancel">取消</button><button class="danger" data-dlg="ok">确认</button></div></div></div>
 
 <script>
-// =========================================================
-// KernelSU WebUI exec 兼容层 (v1.12.0 重写)
-// 官方契约（Manager WebViewInterface.kt + npm kernelsu 库）：
-//   ① exec(cmd, optionsJSON字符串, 回调函数名) —— options 必须是合法 JSON 字符串
-//      （Manager 内部 JSONObject(options)：传 "" 或 JS 对象会抛
-//        "Java exception was raised during method invocation"）；
-//      回调为 window[函数名](errno, stdout, stderr) 三参数。
-//   ② exec(cmd) 同步版 —— 直接返回 stdout 字符串（极老 Manager 的回落路径）。
-// =========================================================
-var __mt_seq = 0;
-function execCmd(cmd){
-  return new Promise(function(resolve){
-    if(!window.ksu || typeof window.ksu.exec !== 'function'){
-      resolve({errno:1, stdout:'', stderr:'no-ksu'}); return;
+(function(){
+  'use strict';
+  var BASE = '/data/adb/modules/rmg_memtonic';
+
+  // ---------- 1. exec bridge (KernelSU 官方语义: ksu.exec(cmd, JSON options, cbName); cb(errno, stdout, stderr)) ----------
+  var seq = 0;
+  function execCmd(cmd, timeoutMs){
+    timeoutMs = timeoutMs || 20000;
+    return new Promise(function(resolve){
+      if (typeof ksu === 'undefined' || !ksu || typeof ksu.exec !== 'function'){
+        resolve({errno:-1, stdout:'', stderr:'KernelSU 桥接不可用（请从管理器模块页打开本面板）'});
+        return;
+      }
+      var name = '__mt_cb_' + Date.now() + '_' + (++seq);
+      var done = false;
+      function finish(errno, stdout, stderr){
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        try { delete window[name]; } catch(e){ window[name] = undefined; }
+        resolve({errno: errno, stdout: stdout || '', stderr: stderr || ''});
+      }
+      window[name] = function(errno, stdout, stderr){ finish(errno, stdout, stderr); };
+      var timer = setTimeout(function(){
+        finish(-2, '', '命令超时未返回（' + Math.round(timeoutMs/1000) + 's）。可能是管理器回调丢失，请重试。');
+      }, timeoutMs);
+      try {
+        ksu.exec(cmd, '{}', name);
+      } catch(e1){
+        // 兼容极老管理器的同步 exec(cmd) -> string
+        try {
+          var out = ksu.exec(cmd);
+          if (typeof out === 'string'){ finish(0, out, ''); }
+          else { finish(-1, '', 'exec 调用异常: ' + e1); }
+        } catch(e2){
+          finish(-1, '', 'exec 调用异常: ' + e2);
+        }
+      }
+    });
+  }
+
+  // ---------- 2. busy 单飞管理（秒计 + 看门狗） ----------
+  var busy = false, busyTimer = null, busyStart = 0, BUSY_WATCHDOG = 60000;
+  var buttons = [];
+  function setDisabled(d){
+    for (var i=0;i<buttons.length;i++) buttons[i].disabled = d;
+  }
+  function busyOn(label){
+    if (busy) return false;
+    busy = true; busyStart = Date.now();
+    setDisabled(true);
+    document.getElementById('busybar').className = 'on';
+    tick(label);
+    busyTimer = setInterval(function(){ tick(null); }, 1000);
+    setTimeout(function(){
+      if (busy && busyStart && Date.now() - busyStart >= BUSY_WATCHDOG - 50){
+        busyOff();
+        showMsg('命令超过 ' + (BUSY_WATCHDOG/1000) + 's 未结束，已解除锁定。请重试或重新打开面板。', 'err');
+      }
+    }, BUSY_WATCHDOG);
+    return true;
+  }
+  function tick(label){
+    var bt = document.getElementById('busytxt');
+    var base = label || bt.textContent.replace(/ … \d+s$/, '');
+    var s = Math.floor((Date.now() - busyStart)/1000);
+    bt.textContent = base + ' … ' + s + 's';
+  }
+  function busyOff(){
+    busy = false; busyStart = 0;
+    if (busyTimer){ clearInterval(busyTimer); busyTimer = null; }
+    document.getElementById('busybar').className = '';
+    setDisabled(false);
+  }
+
+  function showMsg(txt, kind){
+    var el = document.getElementById('msg');
+    el.textContent = txt || '';
+    el.style.color = kind === 'ok' ? 'var(--ok)' : (kind === 'err' ? 'var(--err)' : 'var(--tx2)');
+  }
+  function showErr(txt){
+    var box = document.getElementById('errbox');
+    if (!txt){ box.style.display = 'none'; document.getElementById('e_txt').textContent=''; return; }
+    box.style.display = '';
+    document.getElementById('e_txt').textContent = txt;
+  }
+
+  // ---------- 3. 页面内确认弹窗（不依赖 window.confirm，避免 WebView 缺失时静默返回 false） ----------
+  function confirmBox(text){
+    return new Promise(function(resolve){
+      var mask = document.getElementById('mask');
+      document.getElementById('dtxt').textContent = text;
+      mask.className = 'on';
+      function done(v){
+        mask.className = '';
+        mask.removeEventListener('click', onClick);
+        resolve(v);
+      }
+      function onClick(ev){
+        var act = ev.target && ev.target.getAttribute ? ev.target.getAttribute('data-dlg') : null;
+        if (act === 'ok') done(true);
+        else if (act === 'cancel') done(false);
+      }
+      mask.addEventListener('click', onClick);
+    });
+  }
+
+  // ---------- 4. 渲染（定点更新，不整页重建） ----------
+  // [id, kvKey, title, 口径说明, 触发条件的白话描述]
+  var CARD_DEFS = [
+    ['shield','shield','护栏护航','系统拥堵时精准护航前台渲染链的次数','PSI 内存压力 >=15%'],
+    ['storm','storm','启动风暴','检测到启动风暴窗口的次数','system_server 重启或新生'],
+    ['crash','crash','崩溃雷达','捕获到的崩溃 / ANR 事件数','dropbox 出现新崩溃'],
+    ['rogue','rogue','毒瘤降权','对长时间高 CPU 应用的温和降权次数','连续 3 分钟 >50% CPU'],
+    ['compact','compact','内存压实','按需执行内存整理的次数','息屏高压或 kswapd 换页风暴'],
+    ['blackbox','blackbox','灾难黑匣子','内存风暴时的现场快照落盘数','内存压力 >=25% 持续 2 分钟'],
+    ['rollback','rollback','地雷告警','检出 staged rollback 高危状态的次数','出现待生效的回滚任务'],
+    ['mjburst','mjburst','重负载指纹','前台 major fault 突增预警次数','每分钟缺页 >500 次'],
+    ['bt','bt','蓝牙护航','蓝牙音频栈抗争抢提权次数','蓝牙放音且系统拥堵']
+  ];
+  function buildCards(){
+    var html = '';
+    for (var i=0;i<CARD_DEFS.length;i++){
+      var d = CARD_DEFS[i];
+      html += '<div><div class="n" id="c_' + d[0] + '">-</div>'
+        + '<div class="t">' + d[2] + ' <span id="s_' + d[0] + '" class="badge b-mut" style="font-size:10px;padding:1px 7px"></span></div>'
+        + '<div class="t" style="opacity:.72">' + d[3] + '</div>'
+        + '<div class="t" style="opacity:.55">触发：' + d[4] + '</div></div>';
     }
-    var cbName = '__mt_exec_cb_' + Date.now() + '_' + (++__mt_seq);
-    var settled = false;
-    window[cbName] = function(errno, stdout, stderr){
-      if(settled) return; settled = true;
-      try{ delete window[cbName]; }catch(e){ window[cbName] = undefined; }
-      resolve({errno: errno, stdout: stdout || '', stderr: stderr || ''});
-    };
-    try{
-      // 新版（Manager 11989+ / 官方 v3.3.0）：3 参异步回调，options 必须传 "{}"
-      window.ksu.exec(cmd, '{}', cbName);
-      // 部分旧版同步 exec(String):String 会直接返回 stdout —— 若拿到非空字符串说明是同步版
-    }catch(e){
-      try{
-        var out = window.ksu.exec(cmd);
-        if(typeof out === 'string'){ resolve({errno:0, stdout:out, stderr:''}); }
-        else { resolve({errno:1, stdout:'', stderr:String(e)}); }
-      }catch(e2){
-        resolve({errno:1, stdout:'', stderr:String(e2)});
+    document.getElementById('cards').innerHTML = html;
+  }
+  function set(id, val){
+    var el = document.getElementById(id);
+    if (el) el.textContent = (val === undefined || val === null || val === '') ? '--' : String(val);
+  }
+  function parseKv(s){
+    var kv = {}, toks = (s||'').trim().split(/\s+/);
+    for (var i=0;i<toks.length;i++){
+      var p = toks[i].indexOf('=');
+      if (p > 0) kv[toks[i].substring(0,p)] = toks[i].substring(p+1);
+    }
+    return kv;
+  }
+  function int0(v){ var n = parseInt(v,10); return isNaN(n) ? 0 : n; }
+
+  function renderStatus(kv){
+    var running = kv.state === 'running';
+    document.getElementById('st_state').innerHTML = running
+      ? '<span class="badge b-ok">运行中</span> <span class="badge b-mut">pid ' + (kv.pid||'?') + '</span>'
+      : '<span class="badge b-err">已停止</span>';
+    var avail = Math.round(int0(kv.avail_kb)/1024);
+    set('st_avail', avail > 0 ? avail + ' MB' : '--');
+    var ps = kv.psi_s10, pf = kv.psi_f10;
+    function pct(v){ return (v===undefined || v==='') ? '--' : (v + '%'); }
+    set('st_psi', pct(ps) + ' / ' + pct(pf));
+    var pn = parseFloat(ps);
+    if (isNaN(pn)) pn = 0;
+    var pct = Math.min(100, pn*100/60);
+    var bar = document.getElementById('psi_bar');
+    bar.style.width = pct + '%';
+    bar.style.background = pn >= 30 ? 'var(--err)' : (pn >= 15 ? 'var(--warn)' : 'var(--ok)');
+    for (var i=0;i<CARD_DEFS.length;i++){
+      var d = CARD_DEFS[i];
+      var raw = kv[d[1]];
+      var v = (raw === undefined || raw === '') ? '0' : raw;
+      set('c_' + d[0], v);
+      var sb = document.getElementById('s_' + d[0]);
+      if (sb){
+        if (parseInt(v,10) > 0){ sb.className = 'badge b-ok'; sb.textContent = '已触发 ' + v; }
+        else { sb.className = 'badge b-mut'; sb.textContent = '待命中'; }
       }
     }
+  }
+
+  function li(text){
+    var arr = (text||'').trim().split('\n').filter(function(x){ return x.length > 0; });
+    if (!arr.length) return '（无）';
+    var out = '';
+    for (var i=0;i<arr.length;i++){
+      out += '<div>' + arr[i].replace(/.*\//,'') + '</div>';
+    }
+    return out;
+  }
+
+  async function refresh(){
+    if (busy) return;
+    busyOn('读取状态');
+    try {
+      var r = await execCmd('. ' + BASE + '/scripts/mt_lib.sh 2>/dev/null; collect_stats', 20000);
+      if (r.errno !== 0 || !r.stdout || r.stdout.indexOf('state=') < 0){
+        showErr('无法读取模块状态：' + (r.stderr || ('errno=' + r.errno)));
+        busyOff();
+        return;
+      }
+      showErr('');
+      var kv = parseKv(r.stdout);
+      renderStatus(kv);
+      var now = new Date();
+      set('st_ts', ('0'+now.getHours()).slice(-2) + ':' + ('0'+now.getMinutes()).slice(-2) + ':' + ('0'+now.getSeconds()).slice(-2));
+      var r2 = await execCmd('ls -t ' + BASE + '/run/blackbox-*.log 2>/dev/null | head -5; echo ---; ls -t ' + BASE + '/run/incident-*.log 2>/dev/null | head -5', 15000);
+      var parts = (r2.stdout || '').split('---');
+      document.getElementById('bb').innerHTML = li(parts[0]);
+      document.getElementById('inc').innerHTML = li(parts[1]);
+      document.getElementById('ver').textContent = 'RMG MemTonic 内存与异常守护 · 统计口径：本日志周期';
+    } catch(e){
+      showErr('刷新异常：' + e);
+    }
+    busyOff();
+  }
+
+  // ---------- 5. 操作 ----------
+  async function doStart(){
+    var ok = await confirmBox('确认启动守护并执行系统优化？\n\n将拉起守护进程、对 Launcher 提权，并在息屏时执行内存整理。\n此操作约需 30 秒，请保持面板打开。');
+    if (!ok) return;
+    if (!busyOn('启动守护并优化')) return;
+    showMsg('正在启动守护并执行系统优化…（约 30 秒）', '');
+    var r = await execCmd('sh ' + BASE + '/service.sh; sleep 3; sh ' + BASE + '/scripts/memtonic.sh optimize', 60000);
+    busyOff();
+    var out = (r.stdout || '').trim() || (r.stderr || '').trim();
+    if (r.errno === 0){
+      showMsg(out || '已完成。', 'ok');
+    } else {
+      showMsg(out || ('执行失败（errno=' + r.errno + '）'), 'err');
+    }
+    refresh();
+  }
+  async function doStop(){
+    var ok = await confirmBox('确认停止守护？\n\n所有守护子进程将退出，已做的调度提权会无损还原。');
+    if (!ok) return;
+    if (!busyOn('停止守护')) return;
+    showMsg('正在停止守护并还原调度…', '');
+    var r = await execCmd('sh ' + BASE + '/scripts/memtonic.sh stop', 30000);
+    busyOff();
+    var out = (r.stdout || '').trim() || (r.stderr || '').trim();
+    if (r.errno === 0){
+      showMsg(out || '已停止。', 'ok');
+    } else {
+      showMsg(out || ('执行失败（errno=' + r.errno + '）'), 'err');
+    }
+    refresh();
+  }
+
+  // ---------- 6. 事件委托：按钮无内联 onclick，未定义动作会在 default 报错而非静默失效 ----------
+  function onAction(act){
+    switch(act){
+      case 'start': doStart(); break;
+      case 'stop': doStop(); break;
+      case 'refresh': refresh(); break;
+      default: showMsg('未知操作：' + act, 'err'); break;
+    }
+  }
+  document.addEventListener('click', function(ev){
+    var el = ev.target;
+    while (el && el !== document.body){
+      if (el.getAttribute && el.getAttribute('data-act')){
+        onAction(el.getAttribute('data-act'));
+        return;
+      }
+      el = el.parentNode;
+    }
   });
-}
-function int0(v){ v=parseInt(v,10); return isNaN(v)?0:v; }
-function num(v){ v=parseInt(v,10); return isNaN(v)?null:v; }
 
-// =========================================================
-// v1.12.1: 守护启停控制（启动=service.sh 拉起 + 3s 后一键系统优化）
-// =========================================================
-var __mt_busy = false;
-var MT_BASE = '/data/adb/modules/rmg_memtonic';
-async function ctrl(op){
-  var msg = document.getElementById('ctrlmsg');
-  if(!msg || __mt_busy) return;
-  __mt_busy = true;
-  var btns = document.querySelectorAll('.btn2');
-  for(var i=0;i<btns.length;i++) btns[i].disabled = true;
-  msg.style.color = 'var(--tx2)';
-  msg.textContent = op==='start' ? '正在启动守护并执行系统优化…（约 5 秒）' : '正在停止守护并还原全部调度…';
-  var r;
-  if(op==='start'){
-    r = await execCmd('sh '+MT_BASE+'/service.sh; sleep 3; sh '+MT_BASE+'/scripts/memtonic.sh optimize');
-  }else{
-    r = await execCmd('sh '+MT_BASE+'/scripts/memtonic.sh stop');
-  }
-  var out = (r.stdout||'').trim();
-  if(!out) out = (r.stderr||'').trim();
-  if(!out) out = (r.errno===0) ? '已完成。' : '执行失败（errno='+r.errno+'）';
-  msg.style.color = (r.errno===0) ? 'var(--ok)' : 'var(--err)';
-  msg.textContent = out;
-  for(var j=0;j<btns.length;j++) btns[j].disabled = false;
-  __mt_busy = false;
-  render();
-}
+  // ---------- 7. 自动刷新（仅在页面可见且空闲时） ----------
+  var AUTO_SEC = 30, nextTs = Date.now() + AUTO_SEC*1000;
+  setInterval(function(){
+    var left = Math.ceil((nextTs - Date.now())/1000);
+    set('st_next', left > 0 ? (left + ' 秒后') : '即将刷新');
+    if (left <= 0){
+      nextTs = Date.now() + AUTO_SEC*1000;
+      if (document.visibilityState !== 'hidden' && !busy) refresh();
+    }
+  }, 1000);
 
-async function render(){
-  if(__mt_busy) return;   // 操作执行期间暂停自动刷新（防止清掉执行结果）
-  var c = document.getElementById('content');
-  var st = await execCmd('. /data/adb/modules/rmg_memtonic/scripts/mt_lib.sh 2>/dev/null; collect_stats');
-  if(st.errno!==0 || !st.stdout || st.stdout.indexOf('state=')<0){
-    c.innerHTML='<div class="hint">无法读取模块状态（'+(st.stderr||'no-ksu')+'）。<br>请确认：① 在 KernelSU 管理器的模块详情页打开本 WebUI；② 模块已安装且脚本目录完整。</div>';
-    return;
-  }
-  var kv={}, toks=st.stdout.trim().split(/\s+/);
-  for(var i=0;i<toks.length;i++){ var p=toks[i].split('='); if(p.length>=2) kv[p[0]]=p.slice(1).join('='); }
-  var availMB = Math.round(int0(kv.avail_kb)/1024);
-  var psiS = kv.psi_s10, psiF = kv.psi_f10;
-  var stateCls = kv.state==='running' ? 'state-running' : 'state-stopped';
-  var stateTx  = kv.state==='running' ? '运行中' : '已停止';
-  // PSI 条：some 0-60 映射为进度条
-  var psiN = num(psiS); if(psiN===null) psiN=0;
-  var psiPct = Math.min(100, psiN*100/60);
-  var psiCol = psiN>=30?'var(--err)':(psiN>=15?'var(--warn)':'var(--ok)');
-  var cards = [
-    ['⚡ 护栏护航', kv.shield, 'shield_activate 次数'],
-    ['🌪 启动风暴', kv.storm, 'storm_start 次数'],
-    ['🚨 崩溃雷达', kv.crash, 'crash/ANR 事件'],
-    ['🗡 毒瘤降权', kv.rogue, 'cpu_rogue 次数'],
-    ['🧹 内存压实', kv.compact, 'compact 执行次数'],
-    ['📦 灾难黑匣子', kv.blackbox, 'blackbox 落盘数'],
-    ['🛡 地雷告警', kv.rollback, 'rollback 检出'],
-    ['📈 重负载指纹', kv.mjburst, 'majflt 突增预警'],
-    ['🎧 蓝牙护航', kv.bt, 'bt_guard_on 次数']
-  ];
-  var h = '';
-  h += '<div class="grid">';
-  for(var i=0;i<cards.length;i++){
-    h += '<div class="card"><div class="n">'+cards[i][1]+'</div><div class="t">'+cards[i][0]+' · '+cards[i][2]+'</div></div>';
-  }
-  h += '</div>';
-  h += '<div class="card">';
-  h += '<div class="row"><span class="k">守护状态</span><span class="'+stateCls+'">'+stateTx+'（pid '+kv.pid+'）</span></div>';
-  h += '<div class="row"><span class="k">可用内存</span><span>'+availMB+' MB</span></div>';
-  h += '<div class="row"><span class="k">mem PSI some/full (avg10)</span><span>'+psiS+'% / '+psiF+'%</span></div>';
-  h += '<div class="bar"><i style="width:'+psiPct+'%;background:'+psiCol+'"></i></div>';
-  // v1.12.1: 守护启停控制
-  h += '<div class="row" style="margin-top:6px"><span class="k">守护操作</span><span>'
-    + '<button class="btn2" onclick="ctrlStart()">▶ 启动守护+优化</button>'
-    + '<button class="btn2 warn" onclick="ctrlStop()">■ 停止守护</button></span></div>'
-    + '<div id="ctrlmsg" class="list" style="margin-top:6px;white-space:pre-wrap"></div>';
-  h += '</div>';
-  // 黑匣子与 incident 最近列表
-  var bb = await execCmd('ls -t /data/adb/modules/rmg_memtonic/run/blackbox-*.log 2>/dev/null | head -5; echo ---; ls -t /data/adb/modules/rmg_memtonic/run/incident-*.log 2>/dev/null | head -5');
-  var parts = (bb.stdout||'').split('---');
-  function li(s){ var a=(s||'').trim().split('\n').filter(function(x){return x;}); return a.length? a.map(function(x){return '<div class="list">'+x.replace(/.*\//,'')+'</div>'}).join('') : '<div class="list">（无）</div>'; }
-  h += '<div class="card" style="margin-top:8px"><div class="row"><span class="k">最近黑匣子</span></div>'+li(parts[0]);
-  h += '<div class="row" style="margin-top:6px"><span class="k">最近 incident 快照</span></div>'+li(parts[1])+'</div>';
-  c.innerHTML = h;
-  document.getElementById('ver').textContent = 'RMG MemTonic 内存与异常守护 · 统计口径：本日志周期';
-}
-render();
-setInterval(render, 30000); // 30s 自动刷新
+  // ---------- init ----------
+  buttons = Array.prototype.slice.call(document.querySelectorAll('button[data-act]'));
+  buildCards();
+  refresh();
+})();
 </script>
 </body>
 </html>

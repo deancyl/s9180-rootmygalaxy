@@ -1,8 +1,12 @@
 # RMG MemTonic —— SM-S9180 内存与异常守护模块
 
-- 模块 ID：`rmg_memtonic` ｜ 版本：v1.10.0 ｜ 适用：Galaxy S23 Ultra（SM-S9180，dm3q）KernelSU 临时 Root（late-load）方案
+- 模块 ID：`rmg_memtonic` ｜ 版本：v1.12.5 ｜ 适用：Galaxy S23 Ultra（SM-S9180，dm3q）KernelSU 临时 Root（late-load）方案
 
 ## 版本历史
+
+- **v1.12.3（2026-10-16）**：WebUI 修复与重做——修复控制按钮因调用未定义函数而完全失效（P0）、exec 无超时导致刷新可永久卡死、PSI 空值渲染异常、护栏护航计数键名错误恒显 0；新增数据更新时间/自动刷新倒计时、busy 秒计与看门狗、页面内确认弹窗、SVG 图标与更大触控区。
+
+- **v1.12.2（2026-10-16）**：修复 `fg_majflt_burst` 虚报。根因：cgroup tasks（含主线程和线程）被误当 pid 列表去累加 `/proc/pid/stat` 的 majflt；同 pid 多线程的活动重复累计，导致 454M/60s 这种"四个数量级"的假数据。现在单次 awk 内逐 tid 读 stat 并汇总真增量。
 
 - **v1.10.0（2026-10-10）**：内存风暴三件套——mem PSI 60s 连续监测（内建 read 零 fork）、灾难黑匣子（连续 2 轮 some≥25 落盘 PSI/meminfo/RSS+majflt Top10）、亮屏风暴级压实例外（psi some≥30 唯一通道，常规亮屏禁压铁律不变，相机/截屏守卫无条件）；kswapd>90s/h 顺手压实；前台 majflt 差分指纹预警。源自 2026-10-09 Synology 转码爆内存事故取证。
 
