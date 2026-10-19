@@ -354,3 +354,14 @@
 - v1.5.1：修复 Launcher 优先级错乱、stop 还原失效、高优线程降级、快照覆盖竞争等热修复。
 
 
+
+---
+
+## [v1.12.6] - 2026-10-19
+### Fixed
+- **设备端版本漂移（P0）**：真机 `/data/adb/modules/rmg_memtonic` 仍为 10-18 22:02 的 1.12.5 部署，缺失 FR-9 CPU PSI 分支与 `ss_health_probe`。本轮确认后统一起部署 v1.12.6。
+- **fluency_shield 孤儿生命周期（P1）**：主守护重启后未清理旧 fluency_shield 实例，导致 PID 文件残留与旧进程续跑。`start` 前先 `pkill` 再启动，并正确写入新 pid。
+- **FR-C3 触发窗口过窄（P1）**：从"provider 已进 D 状态"提前到 "face-service 存活 + CPU PSI ≥35 或 mem PSI ≥10"即可预护航，避免 provider flush raise 时来不及拦截。
+- **majflt 计数假告警**：极端集合切换时的累计差分可能达到上亿次，设上限 1,000,000 以内的才合理。
+### Verified
+- 所有变更均本地脚本语法检查，准备设备部署与真机回归。

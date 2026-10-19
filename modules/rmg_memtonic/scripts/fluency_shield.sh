@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# fluency_shield.sh —— RMG MemTonic 前台护盾 (FR-9) + Camera Sentinel + Screenshot Sentinel + BT Sentinel + FR-C3 Flush Sentinel (v1.12.5)
+# fluency_shield.sh —— RMG MemTonic 前台护盾 (FR-9) + Camera Sentinel + Screenshot Sentinel + BT Sentinel + FR-C3 Flush Sentinel (v1.12.6)
 # FR-9: PSI 内存压力飙升时精准提权前台渲染链（SurfaceFlinger + 主线程 + RenderThread）。
 # FR-C Camera Sentinel: 每 5 秒嗅探 media.camera，相机激活时提权 HAL 服务。
 # FR-S Screenshot Sentinel: 监控截屏目录文件数，截屏后 30 秒内对前台 App 提权防卡顿。
@@ -18,7 +18,7 @@
 # v1.12.5: FR-BT2 低成本蓝牙 GATT/LE 在系统内存压力下的护栈哨兵（RayNeo 观察期）。
 . "$(dirname "$0")/mt_lib.sh"
 echo $$ > "$RUN/fluencyshield.pid"
-logx E "event=fluency_shield_start ver=1.12.5 msg=FR-9+CameraSentinel+ScreenshotSentinel+BTSentinel+FR-C3FlushSentinel已开启"
+logx E "event=fluency_shield_start ver=1.12.6 msg=FR-9+CameraSentinel+ScreenshotSentinel+BTSentinel+FR-C3FlushSentinel已开启"
 
 flush_state=0
 flush_ts=0
@@ -48,6 +48,7 @@ bt_last_ts=0              # 上次采样 uptime 秒（归一化分母）
 camera_vip_off 2>/dev/null
 camera_affinity_off 2>/dev/null
 bt_guard_restore 2>/dev/null
+bt2_guard_restore 2>/dev/null
 flush_guard_restore 2>/dev/null
 
 # FR-S: 截屏目录初始化（尝试多个常见路径）
@@ -196,7 +197,9 @@ while true; do
       [ "$_frc3_state" = "D" ] && { _frc3_now=1; break; }
     done
   fi
-  if [ "$_frc3_now" -eq 1 ] && [ "$flush_state" -eq 0 ] && [ "$(date +%s)" -ge "$flush_cooldown_until" ]; then
+  _frc3_cpu=$(psi_val cpu some); _frc3_cpu=${_frc3_cpu%%.*}; case "$_frc3_cpu" in ""|*[!0-9]*) _frc3_cpu=0;; esac
+  _frc3_mem=$(psi_val memory some); _frc3_mem=${_frc3_mem%%.*}; case "$_frc3_mem" in ""|*[!0-9]*) _frc3_mem=0;; esac
+  if { [ "$_frc3_now" -eq 1 ] || { [ -n "$_frc3_face" ] && [ -n "$_frc3_prov" ] && { [ "$_frc3_cpu" -ge 35 ] || [ "$_frc3_mem" -ge 10 ]; }; }; } && [ "$flush_state" -eq 0 ] && [ "$(date +%s)" -ge "$flush_cooldown_until" ]; then
     flush_state=1
     flush_ts=$(date +%s)
     flush_guard_boost "$_frc3_face" "$_frc3_prov"
@@ -227,7 +230,7 @@ while true; do
         done
       fi
       if [ -n "$_btp2" ]; then
-        bt_guard_boost "$_btp2" "$_bth2" "$_ash2"
+        bt2_guard_boost "$_btp2" "$_bth2" "$_ash2"
         logx A "act=bt2_guard_on trigger=rayneo_gatt psi_mem=$bt2_psi msg=LE/GATT压力护航"
       fi
     fi
@@ -236,7 +239,7 @@ while true; do
       bt2_miss=$((bt2_miss + 1))
       if [ "$bt2_miss" -ge 2 ]; then
         bt2_state=0; bt2_miss=0
-        bt_guard_restore
+        bt2_guard_restore
         bt2_cooldown_until=$(($(date +%s) + 30))
         logx A "act=bt2_guard_off psi_mem=$bt2_psi msg=压力回落_蓝牙栈还原"
       fi
@@ -315,11 +318,12 @@ while true; do
     continue
   fi
 
-  psi=$(cat /proc/pressure/memory 2>/dev/null | grep "some" | awk '{print $2}' | cut -d= -f2)
-  case "$psi" in ''|*[!0-9.]*) continue;; esac
-  psi_int=$(echo "$psi" | awk '{print int($1*100)}')
+  psi=$(psi_val memory some)
+  cpu_psi=$(psi_val cpu some)
+  psi_int=$(awk -v v="$psi" 'BEGIN{print int(v*100)}')
+  cpu_psi_int=$(awk -v v="$cpu_psi" 'BEGIN{print int(v*100)}')
 
-  if [ "$psi_int" -ge 1500 ] && [ "$is_boosting" -eq 0 ]; then
+  if { [ "$psi_int" -ge 1500 ] || [ "$cpu_psi_int" -ge 2500 ]; } && [ "$is_boosting" -eq 0 ]; then
     is_boosting=1
 
     # 1. 抓取前台焦点 App 包名
@@ -366,10 +370,10 @@ while true; do
             break
           fi
         done
-        logx W "event=shield_activate psi=$psi pkg=$fg_pkg pid=$fg_pid msg=系统拥堵_精准护航主线程与渲染线程"
+        logx W "event=shield_activate psi=$psi cpu_psi=$cpu_psi pkg=$fg_pkg pid=$fg_pid msg=系统拥堵_精准护航主线程与渲染线程"
       fi
     else
-      logx W "event=shield_activate psi=$psi pkg=unknown msg=系统拥堵_仅护航系统渲染层"
+      logx W "event=shield_activate psi=$psi cpu_psi=$cpu_psi pkg=unknown msg=系统拥堵_仅护航系统渲染层"
     fi
 
     # 4. 维持护航 15 秒

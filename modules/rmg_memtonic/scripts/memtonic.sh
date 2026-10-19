@@ -216,6 +216,7 @@ stop)
   # P2 Camera Sentinel 清场
   flush_guard_restore 2>/dev/null
   bt_guard_restore 2>/dev/null
+  bt2_guard_restore 2>/dev/null
   rm -f "$RUN/camera_active.flag" "$RUN/camera_vip.bak" 2>/dev/null
   # Screenshot Sentinel 清场
   rm -f "$SCREENSHOT_ACTIVE_FLAG" "$SCREENSHOT_END_TS" "$RUN/screenshot_fg.bak" 2>/dev/null
@@ -282,7 +283,7 @@ if [ -n "$_existing" ] && [ -d "/proc/$_existing" ] && grep -q memtonic /proc/$_
 fi
 check_root_liveness
 echo "$$:$(pid_starttime $$)" > "$PIDF"
-logx E "event=start ver=1.12.1 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
+logx E "event=start ver=1.12.6 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
 
 # 即刻触发一次 Staged Rollback 检测（事前告警，防误重启丢 Root）
 check_staged_rollback
@@ -311,8 +312,11 @@ nohup sh "$MODDIR/scripts/vk_injector.sh" >/dev/null 2>&1 &
 logx E "event=vk_injector_launched msg=后台等待开机平息后执行"
 
 # v1.6.0 FR-9：前台绝对护盾
+# v1.12.6 生命周期修复：先清掉 history 孤儿 fluency_shield，避免旧实例继续跑而新主守护误以为子进程已托管
+pkill -9 -f fluency_shield.sh 2>/dev/null
 nohup sh "$MODDIR/scripts/fluency_shield.sh" >/dev/null 2>&1 &
-logx E "event=fluencyshield_launched msg=前台流畅度最后一道防线已启动"
+echo "$!" > "$RUN/fluencyshield.pid"
+logx E "event=fluencyshield_launched pid=$(cat "$RUN/fluencyshield.pid") msg=前台流畅度最后一道防线已启动"
 
 # v1.6.0 FR-7：结构性健康追踪变量
 last_health=0

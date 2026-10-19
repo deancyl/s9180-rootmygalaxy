@@ -39,7 +39,7 @@ MODDIR="${SCRIPT_DIR%/*}"
 RUN=$MODDIR/run          # 运行时私有目录（root 700）
 LOG=$RUN/memtonic.log    # 审计日志（超 256KB 字节基准截断）
 MODULE_PROP=$MODDIR/module.prop  # v1.11.0: 模块声明文件（卡片描述动态统计的写入目标）
-MT_VERSION=v1.12.5               # v1.12.5: 模块版本（与 module.prop 同步，动态描述引用）
+MT_VERSION=v1.12.6               # v1.12.5: 模块版本（与 module.prop 同步，动态描述引用）
 PIDF=$RUN/memtonic.pid   # 守护进程记录，格式 "pid:进程启动时间"
 GUARD_PIDF=$RUN/guard.pid
 LOCK=$RUN/lock           # 维护互斥锁（mkdir 原子锁，含陈旧锁回收）
@@ -492,26 +492,61 @@ find_face_service_pid() {
   pidof vendor.samsung.hardware.biometrics.face-service 2>/dev/null
 }
 
-# v1.12.5: system_server 堆压快照（内存 OOM 软重启的前哨）
+# v1.12.6: system_server 堆压快照（内存 OOM 软重启的前哨）
 # 用法：ss_heap_probe <触发日志标签>
-# 江湖规则：只在堆超阈值或有压力时落盘，避免每次都拉 dumpsys 打进日志。
+# 江湖规则：只在 Java Heap 接近阈值时落盘；本函数会调用 dumpsys，因此由
+# ss_health_probe 在廉价 /proc/status 门控命中后调用，不能每轮裸跑。
 ss_heap_probe() {
   _trig=$1
   [ -n "$_trig" ] || _trig=manual
   _ss=$(pidof system_server 2>/dev/null); _ss=${_ss%% *}
   [ -n "$_ss" ] || return 0
-  _heap=$(dumpsys meminfo system_server 2>/dev/null | awk '/Total PSS|Dalvik Heap/{print}' | head -n 4)
+  _heap=$(dumpsys meminfo system_server 2>/dev/null | awk '/Total PSS|Dalvik Heap|Java Heap/{print}')
   case "$_heap" in ''|'') return 0;; esac
-  case "$_heap" in *'Dalvik Heap'*) ;; *) return 0;; esac
-  _dalvik=$(echo "$_heap" | awk '/Dalvik Heap/{for(i=1;i<=NF;i++)if($i~/^[0-9]+$/){print $i;exit}}')
-  case "$_dalvik" in ''|*[!0-9]*) return 0;; esac
-  if [ "$_dalvik" -ge $((300*1024)) ]; then
+  _java_heap=$(echo "$_heap" | awk '/Java Heap/{for(i=1;i<=NF;i++)if($i~/^[0-9]+$/){print $i;exit}}')
+  case "$_java_heap" in ''|*[!0-9]*) return 0;; esac
+  if [ "$_java_heap" -ge "$SS_HEAP_WARN_KB" ]; then
     _ssbb="$RUN/ssheap-$(date '+%Y%m%d_%H%M%S').log"
     echo "# MemTonic ssheap _trigger=$_trig _ts=$(date '+%m-%d %H:%M:%S')" > "$_ssbb"
     echo "$_heap" >> "$_ssbb"
     dumpsys meminfo system_server 2>/dev/null | head -n 120 >> "$_ssbb"
-    logx A "act=ss_heap_probe trigger=$_trig dalvik_kb=$_dalvik path=$(basename "$_ssbb")"
+    logx A "act=ss_heap_probe trigger=$_trig java_heap_kb=$_java_heap path=$(basename "$_ssbb")"
   fi
+}
+
+# v1.12.6: system_server 健康门控。每轮只读 /proc/<pid>/status；超过 RSS/线程/Swap
+# 阈值时再调 ss_heap_probe 落盘。日志按 SS_HEALTH_COOL 秒去重，避免刷屏。
+SS_HEALTH_RSS_KB=700000
+SS_HEALTH_SWAP_KB=200000
+SS_HEALTH_THREADS=600
+SS_HEALTH_COOL=900
+SS_HEAP_WARN_KB=400000
+SS_HEALTH_STATE=$RUN/ss_health.ts
+
+ss_health_probe() {
+  _ss=$(pidof system_server 2>/dev/null); _ss=${_ss%% *}
+  case "$_ss" in ''|*[!0-9]*) return 0;; esac
+  [ -r "/proc/$_ss/status" ] || return 0
+  _st=$(awk '/^VmRSS/{r=$2}/^VmSwap/{s=$2}/^Threads/{t=$2}END{print r+0,s+0,t+0}' "/proc/$_ss/status" 2>/dev/null)
+  set -- $_st
+  _rss=$1; _swap=$2; _threads=$3
+  case "$_rss" in ''|*[!0-9]*) return 0;; esac
+  case "$_swap" in ''|*[!0-9]*) return 0;; esac
+  case "$_threads" in ''|*[!0-9]*) return 0;; esac
+
+  _warn=0
+  [ "$_rss" -ge "$SS_HEALTH_RSS_KB" ] && _warn=1
+  [ "$_swap" -ge "$SS_HEALTH_SWAP_KB" ] && _warn=1
+  [ "$_threads" -ge "$SS_HEALTH_THREADS" ] && _warn=1
+  [ "$_warn" -eq 1 ] || return 0
+
+  _now=$(date +%s)
+  _last=$(cat "$SS_HEALTH_STATE" 2>/dev/null)
+  case "$_last" in ''|*[!0-9]*) _last=0;; esac
+  [ $((_now - _last)) -ge "$SS_HEALTH_COOL" ] || return 0
+  echo "$_now" > "$SS_HEALTH_STATE" 2>/dev/null
+  logx W "warn=system_server_pressure rss_kb=$_rss swap_kb=$_swap threads=$_threads note=heap_or_thread_growth"
+  ss_heap_probe "system_server_pressure"
 }
 
 # camera_vip_on: 相机激活时提权 cameraserver 与 HAL provider（严格遵守增量语义）
@@ -661,6 +696,43 @@ bt_guard_restore() {
   done < "$RUN/bt_guard.bak"
   rm -f "$RUN/bt_guard.bak" 2>/dev/null
   logx A "act=bt_guard_off restored=$_bgr_n msg=蓝牙音频栈优先级已无损还原"
+}
+
+# bt2_guard_boost/restore: FR-BT2 使用独立备份文件，禁止与 FR-BT 共用 bak。
+# 二者触发条件不同，且可在同一 tick 同时成立；共用会导致一方还原时截断另一方的
+# 增量记录，产生优先级泄漏或双重还原。
+bt2_guard_boost() {
+  : > "$RUN/bt2_guard.bak" 2>/dev/null
+  _b2b_n=0
+  for tgt in "$1" "$2" "$3"; do
+    case "$tgt" in ''|*[!0-9]*) continue;; esac
+    [ -d "/proc/$tgt" ] || continue
+    for t in /proc/$tgt/task/[0-9]*; do
+      tid=${t##*/}
+      on=$(nice_of "$tid")
+      case "$on" in ''|*[!0-9-]*) continue;; esac
+      [ "$on" -le -8 ] && continue
+      renice -n $((-8 - on)) -p "$tid" >/dev/null 2>&1 || continue
+      echo "$tid $on" >> "$RUN/bt2_guard.bak" 2>/dev/null
+      _b2b_n=$((_b2b_n+1))
+    done
+  done
+  logx A "act=bt2_guard_boost threads=$_b2b_n nice=-8 msg=LE/GATT压力护航_独立备份"
+}
+
+bt2_guard_restore() {
+  [ -s "$RUN/bt2_guard.bak" ] || return 0
+  _b2r_n=0
+  while read -r tid orig; do
+    case "$tid" in ''|*[!0-9]*) continue;; esac
+    case "$orig" in ''|*[!0-9-]*) continue;; esac
+    [ -d "/proc/$tid" ] || continue
+    cur=$(nice_of "$tid")
+    case "$cur" in ''|*[!0-9-]*) continue;; esac
+    renice -n $((orig - cur)) -p "$tid" >/dev/null 2>&1 && _b2r_n=$((_b2r_n+1))
+  done < "$RUN/bt2_guard.bak"
+  rm -f "$RUN/bt2_guard.bak" 2>/dev/null
+  logx A "act=bt2_guard_restore restored=$_b2r_n msg=LE/GATT压力护航_优先级已无损还原"
 }
 
 # flush_guard_boost: face-service 相机会话期间 provider/caller 逐线程提权至 -8（差分记录到 $RUN/flush_guard.bak）

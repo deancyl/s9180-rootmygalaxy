@@ -334,12 +334,16 @@ mem_probe() {
     fi
   fi
 
+  # v1.12.6: system_server 健康门控（只读 /proc/status，高水位才 dumpsys 取证）
+  ss_health_probe 2>/dev/null
+
   # P2: 前台 majflt 差分指纹（转码/媒体导入类负载预警，10min 限频）
   _fm=$(fg_majflt_sum 2>/dev/null)
   if [ -n "$_fm" ] && [ -n "$_fg_mflt_prev" ]; then
     _fd=$(($_fm - _fg_mflt_prev))
     [ "$_fd" -lt 0 ] && _fd=0   # PID 身份变更/进程更换顶部 cgroup 时窗口差分可能为负，防负值归零
-    if [ "$_fd" -ge "$FG_MFLT_RATE" ]; then
+    # majflt 累计值来自集合差分；切换 pid 集合时理论差分可达全集级，防假告警
+    if [ "$_fd" -ge "$FG_MFLT_RATE" ] && [ "$_fd" -lt 1000000 ]; then
       _now=$(date +%s)
       if [ $((_now - _fg_mflt_warn_ts)) -ge 600 ]; then
         logx W "warn=fg_majflt_burst rate=${_fd}/60s total=$_fm note=前台重负载指纹_单 pid 集合窗内差分"
