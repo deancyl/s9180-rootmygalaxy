@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# fluency_shield.sh —— RMG MemTonic 前台护盾 (FR-9) + Camera Sentinel + Screenshot Sentinel + BT Sentinel + FR-C3 Flush Sentinel (v1.12.6)
+# fluency_shield.sh —— RMG MemTonic 前台护盾 (FR-9) + Camera Sentinel + Screenshot Sentinel + BT Sentinel + FR-C3 Flush Sentinel (v1.12.7)
 # FR-9: PSI 内存压力飙升时精准提权前台渲染链（SurfaceFlinger + 主线程 + RenderThread）。
 # FR-C Camera Sentinel: 每 5 秒嗅探 media.camera，相机激活时提权 HAL 服务。
 # FR-S Screenshot Sentinel: 监控截屏目录文件数，截屏后 30 秒内对前台 App 提权防卡顿。
@@ -18,7 +18,7 @@
 # v1.12.5: FR-BT2 低成本蓝牙 GATT/LE 在系统内存压力下的护栈哨兵（RayNeo 观察期）。
 . "$(dirname "$0")/mt_lib.sh"
 echo $$ > "$RUN/fluencyshield.pid"
-logx E "event=fluency_shield_start ver=1.12.6 msg=FR-9+CameraSentinel+ScreenshotSentinel+BTSentinel+FR-C3FlushSentinel已开启"
+logx E "event=fluency_shield_start ver=1.12.7 msg=FR-9+CameraSentinel+ScreenshotSentinel+BTSentinel+FR-C3FlushSentinel已开启"
 
 flush_state=0
 flush_ts=0
@@ -72,7 +72,9 @@ while true; do
   # =========================================================
   cam_now=0
   _cam_focus=$(focused_pkg)
-  [ "$_cam_focus" = "com.sec.android.app.camera" ] && cam_now=1
+  case "$_cam_focus" in
+    com.sec.android.app.camera|com.sec.android.gallery3d) cam_now=1 ;;
+  esac
 
   if [ "$cam_now" -eq 1 ] && [ "$cam_state" -eq 0 ]; then
     # ── 相机刚激活 ────────────────────────────────────────

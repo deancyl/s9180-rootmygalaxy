@@ -175,7 +175,14 @@ scan_cpu_rogue() {
     # 活动进程：完整判定（pkg 解析 + 豁免 + 阈值）
     pkg=$(pkg_of "$pid"); [ -n "$pkg" ] || continue
 
-    # 豁免：白名单、前台焦点、桌面、前台服务（音乐/录音/穿戴）
+    # v1.12.7: 相机/图库不再无条件豁免。 Samsung 相机或图库退到后台后
+    # 仍可能持有相机链路并产生 200%+ CPU；此时必须接受毒瘤扫描。
+    # 其他应用在前台调用相机时，焦点/top-app cgroup/前台服务豁免仍然生效。
+    if [ -f "$CAMERA_ACTIVE_FLAG" ]; then
+      case "$pkg" in
+        com.sec.android.app.camera|com.sec.android.gallery3d) continue ;;
+      esac
+    fi
     in_whitelist "$pkg" && continue
     [ "$pkg" = "$focus" ] && continue
     [ "$pkg" = "$LAUNCHER_PKG" ] && continue
