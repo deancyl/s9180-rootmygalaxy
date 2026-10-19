@@ -375,7 +375,7 @@
   });
 
   // ---------- 7. 自动刷新（仅在页面可见且空闲时） ----------
-  var AUTO_SEC = 30, nextTs = Date.now() + AUTO_SEC*1000;
+  var AUTO_SEC = 15, nextTs = Date.now() + AUTO_SEC*1000;
   setInterval(function(){
     var left = Math.ceil((nextTs - Date.now())/1000);
     set('st_next', left > 0 ? (left + ' 秒后') : '即将刷新');

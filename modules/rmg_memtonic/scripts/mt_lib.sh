@@ -939,7 +939,7 @@ collect_stats() {
   _st_crash=$(grep -c 'event=crash_detected' "$LOG" 2>/dev/null)
   _st_rollback=$(grep -c 'event=rollback_disarm' "$LOG" 2>/dev/null)
   _st_mjburst=$(grep -c 'warn=fg_majflt_burst' "$LOG" 2>/dev/null)
-  _st_bt=$(grep -c 'act=bt_guard_on' "$LOG" 2>/dev/null)
+  _st_bt=$(grep -cE 'act=bt_guard_on|act=bt2_guard_on' "$LOG" 2>/dev/null)
   for _k in _st_shield _st_storm _st_rogue _st_compact _st_blackbox _st_crash _st_rollback _st_mjburst _st_bt; do
     eval "v=\$$_k"; case "$v" in ''|*[!0-9]*) eval "$_k=0";; esac
   done
