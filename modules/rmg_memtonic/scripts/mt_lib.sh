@@ -39,7 +39,7 @@ MODDIR="${SCRIPT_DIR%/*}"
 RUN=$MODDIR/run          # 运行时私有目录（root 700）
 LOG=$RUN/memtonic.log    # 审计日志（超 256KB 字节基准截断）
 MODULE_PROP=$MODDIR/module.prop  # v1.11.0: 模块声明文件（卡片描述动态统计的写入目标）
-MT_VERSION=v1.12.7               # v1.12.7: 模块版本（与 module.prop 同步，动态描述引用）
+MT_VERSION=v1.12.8               # v1.12.8: 模块版本（与 module.prop 同步，动态描述引用）
 PIDF=$RUN/memtonic.pid   # 守护进程记录，格式 "pid:进程启动时间"
 GUARD_PIDF=$RUN/guard.pid
 LOCK=$RUN/lock           # 维护互斥锁（mkdir 原子锁，含陈旧锁回收）
@@ -486,6 +486,16 @@ bt2_probe_rayneo() {
   _btpc=$(logcat -d -v brief -t 100 2>/dev/null | grep -c 'RayneoForegroundService')
   case "$_btpc" in ''|*[!0-9]*) _btpc=0;; esac
   bt2_gatt_win=$_btpc
+}
+
+# v1.12.8: FR-BT3 —— RayNeo BR/EDR 主动断连后的 LE 重连护航窗口
+# 真机证据（10-20 08:32/08:39/08:57）：RayNeo iO 以 reason=19 主动断开 BR/EDR，
+# 随后 com.rayneo.venus.pub 在 3-5 秒内用 LE 直连回连。此窗口是断联风险最高点。
+bt3_disconnect_seen() {
+  _b3a=$(logcat -d -v time -t 160 2>/dev/null | \
+    grep -A2 'action: android.bluetooth.device.action.ACL_DISCONNECTED' | \
+    grep -m1 'Alias(RayNeo')
+  [ -n "$_b3a" ]
 }
 
 find_face_service_pid() {

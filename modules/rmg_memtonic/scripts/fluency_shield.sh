@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# fluency_shield.sh —— RMG MemTonic 前台护盾 (FR-9) + Camera Sentinel + Screenshot Sentinel + BT Sentinel + FR-C3 Flush Sentinel (v1.12.7)
+# fluency_shield.sh —— RMG MemTonic 前台护盾 (FR-9) + Camera Sentinel + Screenshot Sentinel + BT Sentinel + FR-C3 Flush Sentinel (v1.12.8)
 # FR-9: PSI 内存压力飙升时精准提权前台渲染链（SurfaceFlinger + 主线程 + RenderThread）。
 # FR-C Camera Sentinel: 每 5 秒嗅探 media.camera，相机激活时提权 HAL 服务。
 # FR-S Screenshot Sentinel: 监控截屏目录文件数，截屏后 30 秒内对前台 App 提权防卡顿。
@@ -18,7 +18,7 @@
 # v1.12.5: FR-BT2 低成本蓝牙 GATT/LE 在系统内存压力下的护栈哨兵（RayNeo 观察期）。
 . "$(dirname "$0")/mt_lib.sh"
 echo $$ > "$RUN/fluencyshield.pid"
-logx E "event=fluency_shield_start ver=1.12.7 msg=FR-9+CameraSentinel+ScreenshotSentinel+BTSentinel+FR-C3FlushSentinel已开启"
+logx E "event=fluency_shield_start ver=1.12.8 msg=FR-9+CameraSentinel+ScreenshotSentinel+BTSentinel+FR-C3FlushSentinel+FR-BT3已开启"
 
 flush_state=0
 flush_ts=0
@@ -28,6 +28,8 @@ FR_C3_MAX=15
 is_boosting=0
 shield_cooldown_until=0   # Fix-E: 护盾冷却截止时间戳
 cam_state=0               # Camera Sentinel 状态机：0=无相机 1=相机活跃
+bt3_state=0               # FR-BT3 状态机：0=空闲 1=护航中
+bt3_ts=0                  # FR-BT3 护航开始时间
 
 # FR-BT (v1.12.0): BT Sentinel 状态机
 bt_state=0                # 0=未护航 1=护航中
@@ -165,6 +167,38 @@ while true; do
         bt_guard_restore
         bt_cooldown_until=$(($(date +%s) + 30))
       fi
+    fi
+  fi
+
+  # =========================================================
+  # FR-BT3 (v1.12.8): RayNeo BR/EDR 主动断连后的 LE 重连护航
+  # 检测：系统广播 ACL_DISCONNECTED 的最近 160 行 logcat 里出现 RayNeo。
+  # 行为：立即给 BT 栈/HAL/audioserver 提权 25 秒，保护 LE 直连重连窗口。
+  # 边界：只在 RayNeo 别名匹配时触发；25 秒后一次还原，无独立冷却。
+  # =========================================================
+  if [ "$bt3_state" -eq 0 ] && bt3_disconnect_seen; then
+    bt3_state=1
+    bt3_ts=$(date +%s)
+    _btp3=$(pidof com.android.bluetooth 2>/dev/null); _btp3=${_btp3%% *}
+    _bth3=""
+    if [ -n "$_btp3" ]; then
+      for d in /proc/[0-9]*; do
+        _bth3_cmd=$(strings "$d/cmdline" 2>/dev/null | head -n 1)
+        case "$_bth3_cmd" in android.hardware.bluetooth@*) _bth3=${d##*/}; break;; esac
+      done
+    fi
+    _ash3=$(pidof audioserver 2>/dev/null); _ash3=${_ash3%% *}
+    if [ -n "$_btp3" ]; then
+      bt2_guard_boost "$_btp3" "$_bth3" "$_ash3"
+      logx A "act=bt3_guard_on trigger=rayneo_acl_disconnect msg=雷鸟断连后LE重连护航"
+    fi
+  fi
+  if [ "$bt3_state" -eq 1 ]; then
+    _b3t=$(date +%s)
+    if [ $((_b3t - bt3_ts)) -ge 25 ]; then
+      bt3_state=0
+      bt2_guard_restore
+      logx A "act=bt3_guard_off msg=LE重连护航窗口结束_已还原"
     fi
   fi
 

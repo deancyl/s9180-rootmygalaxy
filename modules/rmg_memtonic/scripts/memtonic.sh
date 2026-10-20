@@ -283,7 +283,7 @@ if [ -n "$_existing" ] && [ -d "/proc/$_existing" ] && grep -q memtonic /proc/$_
 fi
 check_root_liveness
 echo "$$:$(pid_starttime $$)" > "$PIDF"
-logx E "event=start ver=1.12.7 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
+logx E "event=start ver=1.12.8 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
 
 # 即刻触发一次 Staged Rollback 检测（事前告警，防误重启丢 Root）
 check_staged_rollback

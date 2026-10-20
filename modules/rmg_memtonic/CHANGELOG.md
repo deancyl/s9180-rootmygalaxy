@@ -370,3 +370,9 @@
 ### Fixed
 - **FR-4 相机白名单后台逃逸（P1）**：Samsung 相机与图库从静态全豁免改为“相机活跃标志存在才豁免”。退出前台后仍占用相机链路且持续高 CPU 时，由普通毒瘤阈值接管，避免后台高 CPU 漏管。
 - **相机活跃判定扩展**：Samsung 图库相机入口也触发 Camera Sentinel。其他应用前台调用相机继续由前台焦点/top-app cgroup/前台服务豁免覆盖，不新增重型探针。
+
+## [v1.12.8] - 2026-10-20
+### Added
+- **FR-BT3：雷鸟断连后 LE 重连护航**。检测 RayNeo iO 的 BR/EDR `ACL_DISCONNECTED` 事件，在随后 25 秒 LE 直连重连窗口内给 BT 栈/HAL/audioserver 逐线程提权 -8，结束后差分还原。
+### Verified
+- 本地脚本语法检查通过。设备部署与真机 ACL 事件回归待执行。
