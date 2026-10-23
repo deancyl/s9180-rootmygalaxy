@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# cpu_guard.sh -- RMG MemTonic CPU 失常护栏 + 崩溃雷达（v1.12.2）
+# cpu_guard.sh -- RMG MemTonic CPU 失常护栏 + 崩溃雷达（v1.12.9）
 # FR-4: 白名单/前台焦点/桌面/前台服务/top-app cgroup 豁免（FR-11）；风暴期暂停干预。
 # FR-5: 旁路监听 dropbox 文件计数，检测 App 崩溃与 ANR。
 # FR-11: top-app cgroup 豁免（微信截图处理等合法 CPU 密集工作不应被惩罚）。

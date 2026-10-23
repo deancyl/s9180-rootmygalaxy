@@ -39,7 +39,7 @@ MODDIR="${SCRIPT_DIR%/*}"
 RUN=$MODDIR/run          # 运行时私有目录（root 700）
 LOG=$RUN/memtonic.log    # 审计日志（超 256KB 字节基准截断）
 MODULE_PROP=$MODDIR/module.prop  # v1.11.0: 模块声明文件（卡片描述动态统计的写入目标）
-MT_VERSION=v1.12.8               # v1.12.8: 模块版本（与 module.prop 同步，动态描述引用）
+MT_VERSION=v1.12.9               # v1.12.9: 模块版本（与 module.prop 同步，动态描述引用）
 PIDF=$RUN/memtonic.pid   # 守护进程记录，格式 "pid:进程启动时间"
 GUARD_PIDF=$RUN/guard.pid
 LOCK=$RUN/lock           # 维护互斥锁（mkdir 原子锁，含陈旧锁回收）
@@ -471,15 +471,25 @@ bt2_state=0
 bt2_miss=0
 bt2_cooldown_until=0
 bt2_gatt_win=0
+bt2_hit=0                 # v1.12.9: 防抖入计数（psi≥5% 连续 2 tick 才允许触发）
 
 bt2_should_boost() {
   if [ "$(date +%s)" -lt "$bt2_cooldown_until" ]; then return 1; fi
-  [ -n "$(pidof com.rayneo.venus.pub 2>/dev/null)" ] || return 1
+  [ -n "$(pidof com.rayneo.venus.pub 2>/dev/null)" ] || { bt2_hit=0; return 1; }
   [ "$bt2_gatt_win" -ge 2 ] && return 0
   bt2_psi=$(psi_val memory some)
   bt2_step=${bt2_psi%%.*}
-  case "$bt2_step" in ''|*[!0-9]*) return 1;; esac
-  [ "$bt2_step" -ge 5 ]
+  case "$bt2_step" in ''|*[!0-9]*) bt2_hit=0; return 1;; esac
+  # v1.12.9: 防抖入——psi≥5% 需连续 2 tick（10s）确认。10-22 15:33-15:47 OOM 取证：
+  # psi 在 0.5-16% 高频抖动时单 tick 触发导致 14 分钟 5 次起落（每次 108 线程 renice），
+  # 是 GC 饿死连锁的帮凶之一。
+  if [ "$bt2_step" -ge 5 ]; then
+    bt2_hit=$((bt2_hit + 1))
+    [ "$bt2_hit" -ge 2 ] && return 0
+    return 1
+  fi
+  bt2_hit=0
+  return 1
 }
 
 bt2_probe_rayneo() {
@@ -506,32 +516,61 @@ find_face_service_pid() {
 # 用法：ss_heap_probe <触发日志标签>
 # 江湖规则：只在 Java Heap 接近阈值时落盘；本函数会调用 dumpsys，因此由
 # ss_health_probe 在廉价 /proc/status 门控命中后调用，不能每轮裸跑。
+# v1.12.9 探测经济性：单次 dumpsys 落临时文件，判定与快照共用同一份。旧实现在
+# 阈值命中后二次 dumpsys——dumpsys meminfo 本身强迫 system_server 重分配，在
+# 高水位上执行等于火上浇油（10-22 15:47 OOM 取证定性为共犯）。
+# 每次探测都将最新 Java Heap 写入 SS_HEAP_KB_FILE（供 FR-SS 水位判定与卡片描述）。
 ss_heap_probe() {
   _trig=$1
   [ -n "$_trig" ] || _trig=manual
   _ss=$(pidof system_server 2>/dev/null); _ss=${_ss%% *}
   [ -n "$_ss" ] || return 0
-  _heap=$(dumpsys meminfo system_server 2>/dev/null | awk '/Total PSS|Dalvik Heap|Java Heap/{print}')
-  case "$_heap" in ''|'') return 0;; esac
-  _java_heap=$(echo "$_heap" | awk '/Java Heap/{for(i=1;i<=NF;i++)if($i~/^[0-9]+$/){print $i;exit}}')
-  case "$_java_heap" in ''|*[!0-9]*) return 0;; esac
+  _tmpf="$RUN/.ssheap_probe.tmp"
+  dumpsys meminfo system_server > "$_tmpf" 2>/dev/null || { rm -f "$_tmpf"; return 0; }
+  _java_heap=$(awk '/Java Heap:/{for(i=1;i<=NF;i++)if($i~/^[0-9]+$/){print $i;exit}}' "$_tmpf")
+  case "$_java_heap" in ''|*[!0-9]*) rm -f "$_tmpf"; return 0;; esac
+  echo "$_java_heap" > "$SS_HEAP_KB_FILE" 2>/dev/null
   if [ "$_java_heap" -ge "$SS_HEAP_WARN_KB" ]; then
     _ssbb="$RUN/ssheap-$(date '+%Y%m%d_%H%M%S').log"
-    echo "# MemTonic ssheap _trigger=$_trig _ts=$(date '+%m-%d %H:%M:%S')" > "$_ssbb"
-    echo "$_heap" >> "$_ssbb"
-    dumpsys meminfo system_server 2>/dev/null | head -n 120 >> "$_ssbb"
+    { echo "# MemTonic ssheap _trigger=$_trig _ts=$(date '+%m-%d %H:%M:%S')"; head -n 120 "$_tmpf"; } > "$_ssbb"
     logx A "act=ss_heap_probe trigger=$_trig java_heap_kb=$_java_heap path=$(basename "$_ssbb")"
   fi
+  rm -f "$_tmpf"
+  return 0
 }
 
 # v1.12.6: system_server 健康门控。每轮只读 /proc/<pid>/status；超过 RSS/线程/Swap
 # 阈值时再调 ss_heap_probe 落盘。日志按 SS_HEALTH_COOL 秒去重，避免刷屏。
+# v1.12.9: ① 定期兜底探测 SS_PROBE_EVERY——堆爬升未必伴随 RSS/线程越限
+#   （10-22 事故盲区：15:33-15:47 堆 +52MB 但 RSS 门控未再命中）；② FR-SS 双水位泄压：
+#   ≥SS_TRIM_KB 请求 trim（am send-trim-memory RUNNING_CRITICAL，实测可用但效果有限，
+#   泄压主力是哨兵防抖降载）；≥SS_ALERT_KB 加黑匣子级告警。trim 按 SS_TRIM_COOL 限频。
 SS_HEALTH_RSS_KB=700000
 SS_HEALTH_SWAP_KB=200000
 SS_HEALTH_THREADS=600
 SS_HEALTH_COOL=900
 SS_HEAP_WARN_KB=400000
 SS_HEALTH_STATE=$RUN/ss_health.ts
+SS_PROBE_EVERY=1800
+SS_PROBE_TS=$RUN/ss_probe.ts
+SS_TRIM_KB=471040
+SS_ALERT_KB=496640
+SS_TRIM_COOL=600
+SS_HEAP_KB_FILE=$RUN/ss_heap.kb
+SS_TRIM_TS=$RUN/ss_trim.ts
+
+ss_heap_relief() {
+  _ss=$1; _hk=$2
+  _now=$(date +%s)
+  _lt=$(cat "$SS_TRIM_TS" 2>/dev/null); case "$_lt" in ''|*[!0-9]*) _lt=0;; esac
+  [ $((_now - _lt)) -ge "$SS_TRIM_COOL" ] || return 0
+  echo "$_now" > "$SS_TRIM_TS" 2>/dev/null
+  if am send-trim-memory "$_ss" RUNNING_CRITICAL >/dev/null 2>&1; then
+    logx A "act=ss_heap_relief level=RUNNING_CRITICAL pid=$_ss java_heap_kb=$_hk msg=已请求泄压_实测效果有限_主力为哨兵降载"
+  else
+    logx W "act=ss_heap_relief result=fail pid=$_ss java_heap_kb=$_hk"
+  fi
+}
 
 ss_health_probe() {
   _ss=$(pidof system_server 2>/dev/null); _ss=${_ss%% *}
@@ -544,19 +583,41 @@ ss_health_probe() {
   case "$_swap" in ''|*[!0-9]*) return 0;; esac
   case "$_threads" in ''|*[!0-9]*) return 0;; esac
 
+  _now=$(date +%s)
+  # v1.12.9: 定期兜底探测（SS_PROBE_EVERY 一次，防"堆爬升但 RSS 未越限"盲区）
+  _pt=$(cat "$SS_PROBE_TS" 2>/dev/null); case "$_pt" in ''|*[!0-9]*) _pt=0;; esac
+  _need_probe=0
+  if [ $((_now - _pt)) -ge "$SS_PROBE_EVERY" ]; then
+    echo "$_now" > "$SS_PROBE_TS" 2>/dev/null
+    _need_probe=1
+  fi
+
   _warn=0
   [ "$_rss" -ge "$SS_HEALTH_RSS_KB" ] && _warn=1
   [ "$_swap" -ge "$SS_HEALTH_SWAP_KB" ] && _warn=1
   [ "$_threads" -ge "$SS_HEALTH_THREADS" ] && _warn=1
-  [ "$_warn" -eq 1 ] || return 0
+  if [ "$_warn" -eq 1 ]; then
+    _last=$(cat "$SS_HEALTH_STATE" 2>/dev/null)
+    case "$_last" in ''|*[!0-9]*) _last=0;; esac
+    if [ $((_now - _last)) -ge "$SS_HEALTH_COOL" ]; then
+      echo "$_now" > "$SS_HEALTH_STATE" 2>/dev/null
+      logx W "warn=system_server_pressure rss_kb=$_rss swap_kb=$_swap threads=$_threads note=heap_or_thread_growth"
+      _need_probe=1
+    fi
+  fi
 
-  _now=$(date +%s)
-  _last=$(cat "$SS_HEALTH_STATE" 2>/dev/null)
-  case "$_last" in ''|*[!0-9]*) _last=0;; esac
-  [ $((_now - _last)) -ge "$SS_HEALTH_COOL" ] || return 0
-  echo "$_now" > "$SS_HEALTH_STATE" 2>/dev/null
-  logx W "warn=system_server_pressure rss_kb=$_rss swap_kb=$_swap threads=$_threads note=heap_or_thread_growth"
+  [ "$_need_probe" -eq 1 ] || return 0
   ss_heap_probe "system_server_pressure"
+
+  # v1.12.9: FR-SS 双水位判定（基于本次探测写入的 SS_HEAP_KB_FILE）
+  _hk=$(cat "$SS_HEAP_KB_FILE" 2>/dev/null); case "$_hk" in ''|*[!0-9]*) return 0;; esac
+  if [ "$_hk" -ge "$SS_ALERT_KB" ]; then
+    logx W "warn=ss_heap_critical java_heap_kb=$_hk msg=接近堆上限_哨兵已自动降载_建议择机软重启"
+    ss_heap_relief "$_ss" "$_hk"
+  elif [ "$_hk" -ge "$SS_TRIM_KB" ]; then
+    ss_heap_relief "$_ss" "$_hk"
+  fi
+  return 0
 }
 
 # camera_vip_on: 相机激活时提权 cameraserver 与 HAL provider（严格遵守增量语义）
@@ -954,7 +1015,8 @@ collect_stats() {
     eval "v=\$$_k"; case "$v" in ''|*[!0-9]*) eval "$_k=0";; esac
   done
   psi_mem_read || P_S10=NA P_F10=NA
-  echo "state=$_st_state pid=${_st_pid:-NA} shield=$_st_shield storm=$_st_storm rogue=$_st_rogue compact=$_st_compact blackbox=$_st_blackbox crash=$_st_crash rollback=$_st_rollback mjburst=$_st_mjburst bt=$_st_bt avail_kb=$(avail_kb) psi_s10=${P_S10:-NA} psi_f10=${P_F10:-NA}"
+  _st_ssheap=$(cat "$SS_HEAP_KB_FILE" 2>/dev/null); case "$_st_ssheap" in ''|*[!0-9]*) _st_ssheap=NA;; esac
+  echo "state=$_st_state pid=${_st_pid:-NA} shield=$_st_shield storm=$_st_storm rogue=$_st_rogue compact=$_st_compact blackbox=$_st_blackbox crash=$_st_crash rollback=$_st_rollback mjburst=$_st_mjburst bt=$_st_bt ssheap=$_st_ssheap avail_kb=$(avail_kb) psi_s10=${P_S10:-NA} psi_f10=${P_F10:-NA}"
 }
 
 # v1.11.0: update_module_desc —— 动态刷新 module.prop description（KSU 管理器卡片简统计）
@@ -963,20 +1025,22 @@ collect_stats() {
 update_module_desc() {
   [ -f "$MODULE_PROP" ] || return 0
   _cs=$(collect_stats)
-  _state=NA; _pid=NA; _shield=0; _storm=0; _rogue=0; _compact=0; _blackbox=0; _crash=0; _rollback=0; _mjburst=0; _bt=0; _avail=NA; _psis=NA; _psif=NA
+  _state=NA; _pid=NA; _shield=0; _storm=0; _rogue=0; _compact=0; _blackbox=0; _crash=0; _rollback=0; _mjburst=0; _bt=0; _ssheap=NA; _avail=NA; _psis=NA; _psif=NA
   for kv in $_cs; do
     k=${kv%%=*}; v=${kv#*=}
     case "$k" in
       state) _state=$v;; pid) _pid=$v;; shield) _shield=$v;; storm) _storm=$v;;
       rogue) _rogue=$v;; compact) _compact=$v;; blackbox) _blackbox=$v;;
       crash) _crash=$v;; rollback) _rollback=$v;; mjburst) _mjburst=$v;; bt) _bt=$v;;
+      ssheap) _ssheap=$v;;
       avail_kb) _avail=$v;; psi_s10) _psis=$v;; psi_f10) _psif=$v;;
     esac
   done
   _avgb=$(( ${_avail:-0} / 1024 )) 2>/dev/null || _avgb=NA
+  case "$_ssheap" in ''|*[!0-9]*) _ssheap_m=NA;; *) _ssheap_m=$(( _ssheap / 1024 ));; esac
   _sw=$(awk '/^SwapTotal/{t=$2}/^SwapFree/{f=$2}END{print (t-f)/1024}' /proc/meminfo 2>/dev/null)
   _swi=${_sw%%.*}; case "$_swi" in ''|*[!0-9]*) _swi=NA;; esac
-  _nd="description=RMG MemTonic 内存守护 ($MT_VERSION)｜守护:${_state}(pid ${_pid})｜⚡本日志周期:护航${_shield}·风暴${_storm}·毒瘤降权${_rogue}·压实${_compact}·黑匣子${_blackbox}·崩溃雷达${_crash}·地雷告警${_rollback}·重负载指纹${_mjburst}·蓝牙护航${_bt}｜可用${_avgb}MB·swap${_swi}MB·PSI ${_psis}/${_psif}｜边界:不杀进程/不冻结/不动zram/不持久内核参数"
+  _nd="description=RMG MemTonic 内存守护 ($MT_VERSION)｜守护:${_state}(pid ${_pid})｜⚡本日志周期:护航${_shield}·风暴${_storm}·毒瘤降权${_rogue}·压实${_compact}·黑匣子${_blackbox}·崩溃雷达${_crash}·地雷告警${_rollback}·重负载指纹${_mjburst}·蓝牙护航${_bt}｜可用${_avgb}MB·swap${_swi}MB·PSI ${_psis}/${_psif}·SS堆${_ssheap_m}MB｜边界:不杀进程/不冻结/不动zram/不持久内核参数"
   _tmp="$RUN/module.prop.tmp"
   awk -v nd="$_nd" '/^description=/{print nd; next} {print}' "$MODULE_PROP" > "$_tmp" 2>/dev/null || return 0
   [ -s "$_tmp" ] && mv "$_tmp" "$MODULE_PROP" 2>/dev/null

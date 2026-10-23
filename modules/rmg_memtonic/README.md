@@ -1,8 +1,12 @@
 # RMG MemTonic —— SM-S9180 内存与异常守护模块
 
-- 模块 ID：`rmg_memtonic` ｜ 版本：v1.12.5 ｜ 适用：Galaxy S23 Ultra（SM-S9180，dm3q）KernelSU 临时 Root（late-load）方案
+- 模块 ID：`rmg_memtonic` ｜ 版本：v1.12.9 ｜ 适用：Galaxy S23 Ultra（SM-S9180，dm3q）KernelSU 临时 Root（late-load）方案
 
 ## 版本历史
+
+- **v1.12.9（2026-10-23）**：system_server 堆高水位防护 FR-SS（460MB trim / 485MB 告警双水位 + 1800s 定期兜底探测，封堵"堆爬升但 RSS 未越限"盲区）+ `ss_heap_probe` 探测经济性（单次 dumpsys，判定与快照共用）+ FR-BT2 防抖入与 90s 还原冷却 + 高 CPU 退避（cpu_psi≥35% 抑制 FR-BT/BT2 新增提权，防干预风暴饿死 GC）+ collect_stats/WebUI 新增 `ssheap` 实时字段 + 版本串五处统一。源自 10-22 system_server OOM 498MB 取证；`am send-trim-memory RUNNING_CRITICAL` 实测对 system_server 可用但弱效。
+
+- **v1.12.5~1.12.8（2026-10-18~20）**：FR-C3 Flush Sentinel（face-service 借相机护航，含泄漏/降频修复）、FR-BT2 RayNeo GATT/LE 压力护航、WebUI 重做与 toybox grep 交替语法计数修复（v1.12.3/4）、FR-BT3 断连后 LE 重连护航、相机白名单活跃态门控、设备漂移热修（FR-9 CPU PSI 口径 / ss_health_probe 挂载 / 孤儿生命周期 / FR-C3 预提权 / majflt 虚报封顶）。
 
 - **v1.12.3（2026-10-16）**：WebUI 修复与重做——修复控制按钮因调用未定义函数而完全失效（P0）、exec 无超时导致刷新可永久卡死、PSI 空值渲染异常、护栏护航计数键名错误恒显 0；新增数据更新时间/自动刷新倒计时、busy 秒计与看门狗、页面内确认弹窗、SVG 图标与更大触控区。
 

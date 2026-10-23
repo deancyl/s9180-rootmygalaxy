@@ -2,6 +2,36 @@
 
 ---
 
+## [v1.12.9] - 2026-10-23
+### Fixed（10-22 15:47 system_server OOM 498MB 取证后修复；接手 Codex 线程收口）
+- **FR-SS system_server 堆双水位主动防护**（`mt_lib.sh` `ss_health_probe` 重构）：`SS_TRIM_KB=471040`（460MB）→ trim+审计；`SS_ALERT_KB=496640`（485MB）→ 告警+trim；trim 冷却 600s 限频；定期兜底探测 `SS_PROBE_EVERY=1800`——修复「堆爬升但 RSS/线程未越限」的探测盲区（10-22 事故堆 472→498MB 期间 RSS 门控未触发）。
+- **ss_heap_probe 探测经济性**：旧实现连续两次 `dumpsys meminfo system_server`（判定+快照各一），堆高水位上执行等于火上浇油 → 单次 dumpsys 落临时文件，判定与快照共用，结果落 `SS_HEAP_KB_FILE`。
+- **FR-BT2 防抖入**：psi≥5% 需连续 2 tick（10s）确认（`bt2_should_boost` 内计数），防 PSI 0.5-16% 高频抖动导致单 tick 触发的起落风暴。
+- **高 CPU 退避**（fluency_shield.sh）：cpu PSI some ≥35% 时抑制 FR-BT/FR-BT2 新增提权（活跃护航照常还原）——防干预风暴在高 CPU 饱和窗口叠加 fork 负载饿死 GC（10-22 事故 cpu_psi 26-44% 下 flush×4/bt2×5/shield×5 约 1000+ fork 是共犯之一）；FR-C3 不退避（cpu≥35 本就是其正向触发条件）。FR-BT2 还原冷却 30s→90s。
+- **可观测**：`collect_stats` 新增 `ssheap=` 字段，卡片描述追加 `·SS堆NMB`。
+- **版本串全量统一**：v1.12.2-v1.12.8 期间残留的 mt_lib/memtonic/fluency/module.prop/cpu_guard 版本全部对齐 v1.12.9（versionCode=38）。
+
+### Verified（真机实测，2026-10-22/23）
+- `am send-trim-memory <sspid> RUNNING_CRITICAL` 对 system_server 可用（RC=0），2s 内堆无变化——定性为弱杠杆，泄压主力是哨兵降载防饿死 GC；`COMPLETE` 被拒（"Unable to set a background trim level on a foreground process"）。
+- 部署回归：staging md5 预检 5/5 → 备份 `scripts.bak-129` → 原子替换 → 设备侧 md5 5/5 → 重启；`event=start ver=1.12.9` + fluency start ver=1.12.9 双确认；WebUI 同路径 `collect_stats` 含 ssheap 字段；`ss_health_probe` 实跑 rc=0（当前堆 291MB，远低于 460MB 水位，双水位正确静默）。
+- 诚实边界：SS 堆基线 450MB+ 为固件+LSPosed 结构体量，模块无法缩小；真泄漏（trim 后 485MB+ 持续 30min）只能黑匣子+建议软重启，不代执行。
+
+---
+
+## [v1.12.8] - 2026-10-20
+### Added
+- **FR-BT3 RayNeo BR/EDR 主动断连后的 LE 重连护航**：logcat 近 160 行出现 RayNeo 的 ACL_DISCONNECTED → BT 栈/HAL/audioserver 提权 25s，护航 LE 直连重连窗口，窗口结束差分还原。真机部署验证：v1.12.8 启动、四 worker 健康、观察期无新增错误/tombstone。
+
+## [v1.12.7] - 2026-10-20
+### Changed
+- **cpu_guard 相机/图库白名单改为活跃态门控**：退到后台后不再无条件豁免（防后台相机进程持续高 CPU 无法干预）。
+
+## [v1.12.6] - 2026-10-19
+### Fixed（设备漂移热修）
+- FR-9 触发口径纳入 CPU PSI（mem 或 cpu 双通道）；`ss_health_probe` 接入 cpu_guard 巡检挂载点；`memtonic.sh` 生命周期修复（先清理 history 孤儿 fluency_shield 再启动，防旧实例继续跑而新主守护误判子进程已托管）；FR-C3 预判性提权（face-service 存活 + cpu≥35%/mem≥10% 时提前介入，不等 D 状态）；`fg_majflt` 虚报封顶。
+
+---
+
 ## [v1.12.5] - 2026-10-18
 ### Fixed
 - **FR-C3 提权泄漏（P1）**：`flush_guard_restore` 在三个清理路径（`fluency_shield` 启动自愈、`memtonic.sh stop`、`uninstall.sh`）中均未调用，导致进程在 stop 时若正处 FR-C3 护航窗口，face-service/provider 线程可能永久留在 -8。已补齐三个清理路径。

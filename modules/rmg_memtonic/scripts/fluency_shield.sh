@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# fluency_shield.sh —— RMG MemTonic 前台护盾 (FR-9) + Camera Sentinel + Screenshot Sentinel + BT Sentinel + FR-C3 Flush Sentinel (v1.12.8)
+# fluency_shield.sh —— RMG MemTonic 前台护盾 (FR-9) + Camera Sentinel + Screenshot Sentinel + BT Sentinel + FR-C3 Flush Sentinel (v1.12.9)
 # FR-9: PSI 内存压力飙升时精准提权前台渲染链（SurfaceFlinger + 主线程 + RenderThread）。
 # FR-C Camera Sentinel: 每 5 秒嗅探 media.camera，相机激活时提权 HAL 服务。
 # FR-S Screenshot Sentinel: 监控截屏目录文件数，截屏后 30 秒内对前台 App 提权防卡顿。
@@ -16,9 +16,12 @@
 #   检测：face-service 存活 + provider 任意 tid 处于 D 状态 → 临时给两端逐线程 renice -8，
 #   退出 30s 冷却。与 FR-C2 互补（FR-C2 护相机 App 前台，FR-C3 护 face 服务借相机）。
 # v1.12.5: FR-BT2 低成本蓝牙 GATT/LE 在系统内存压力下的护栈哨兵（RayNeo 观察期）。
+# v1.12.9: 高CPU退避——cpu PSI some ≥35% 时抑制 FR-BT/FR-BT2 新增提权（活跃护航照常还原），
+#   防干预风暴在高CPU饱和窗口叠加 fork 负载饿死 GC（10-22 system_server OOM 498MB 教训）；
+#   FR-C3 不退避（cpu≥35 本就是其正向触发条件之一）。FR-BT2 还原冷却 30s→90s。
 . "$(dirname "$0")/mt_lib.sh"
 echo $$ > "$RUN/fluencyshield.pid"
-logx E "event=fluency_shield_start ver=1.12.8 msg=FR-9+CameraSentinel+ScreenshotSentinel+BTSentinel+FR-C3FlushSentinel+FR-BT3已开启"
+logx E "event=fluency_shield_start ver=1.12.9 msg=FR-9+CameraSentinel+ScreenshotSentinel+BTSentinel+FR-C3FlushSentinel+FR-BT3+FR-BT2防抖+高CPU退避已开启"
 
 flush_state=0
 flush_ts=0
@@ -26,6 +29,8 @@ flush_cooldown_until=0
 FLUSH_COOLDOWN=30
 FR_C3_MAX=15
 is_boosting=0
+_frc3_cpu=0               # v1.12.9: cpu PSI some 整数%（每 tick 刷新于 FR-C3 探测段；首 tick 兜底 0）
+_frc3_mem=0               # v1.12.9: mem PSI some 整数%（同上）
 shield_cooldown_until=0   # Fix-E: 护盾冷却截止时间戳
 cam_state=0               # Camera Sentinel 状态机：0=无相机 1=相机活跃
 bt3_state=0               # FR-BT3 状态机：0=空闲 1=护航中
@@ -144,7 +149,8 @@ while true; do
       case "${_psi_i:-}${_psi_f:-}" in ''|*[!0-9]*) _psi_i=0; _psi_f=0;; esac
       psi_int=$((_psi_i * 100 + _psi_f))
       if [ "$cam_state" -eq 1 ] || [ "$psi_int" -ge 800 ]; then
-        bt_now_cond=1
+        # v1.12.9 高CPU退避: cpu PSI some ≥35% 时不新增 BT 护航（防干预风暴饿死 GC）
+        [ "$_frc3_cpu" -lt 35 ] && bt_now_cond=1
       fi
     fi
   else
@@ -247,7 +253,9 @@ while true; do
       flush_cooldown_until=$((_frc3_t2 + FLUSH_COOLDOWN))
     fi
   fi
-  if bt2_should_boost; then
+  # v1.12.9 高CPU退避: cpu PSI some ≥35% 时抑制 BT2 新护航（bt2_should_boost 内部防抖
+  # 状态照常推进；活跃护航走 else 分支照常还原）
+  if bt2_should_boost && [ "$_frc3_cpu" -lt 35 ]; then
     bt2_now_cond=1
   fi
   if [ "$bt2_now_cond" -eq 1 ]; then
@@ -276,7 +284,7 @@ while true; do
       if [ "$bt2_miss" -ge 2 ]; then
         bt2_state=0; bt2_miss=0
         bt2_guard_restore
-        bt2_cooldown_until=$(($(date +%s) + 30))
+        bt2_cooldown_until=$(($(date +%s) + 90))
         logx A "act=bt2_guard_off psi_mem=$bt2_psi msg=压力回落_蓝牙栈还原"
       fi
     fi
