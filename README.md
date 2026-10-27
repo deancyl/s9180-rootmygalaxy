@@ -21,7 +21,7 @@
 
 MemTonic 是**配套本仓库临时 root 环境使用**的 KernelSU 模块：软重启（root 会话存活）期间做内存与异常守护，root 失效后自动停止，不做任何持久化改动。
 
-> ⚠️ 模块依赖临时 root 会话才能加载，因此每个 MemTonic release 都**附带前置 APK**（`rootmygalaxy-0.2.36-ksu330.apk`）。请先用 APK 完成一次临时 root，再刷入模块 zip。
+> ⚠️ 模块依赖临时 root 会话才能加载，因此每个 MemTonic release 都**附带前置 APK**（`rootmygalaxy-0.2.36-ksu331.apk`，内嵌 KernelSU v3.3.1）。请先用 APK 完成一次临时 root，再刷入模块 zip。
 
 | MemTonic | 说明 | 适用人群 |
 |---|---|---|
@@ -78,6 +78,16 @@ MemTonic 是**配套本仓库临时 root 环境使用**的 KernelSU 模块：软
 4. **重启后 root 失效**，需要时重新打开 App 再跑一次即可
 
 ## 🧾 校验和
+
+### v0.2.36-ksu331（增强变体，推荐）
+
+```
+MD5    : b2ce7bcff966febe7e8965e25c243b0a
+SHA256 : b0bd6b5c2ac754efd04cd60e1d83bce438d57b313ebc78dbf7df00bd6e1fa167
+大小    : 68,178,226 字节
+```
+
+> 自 v0.2.36-ksu331 起的所有 RootMyGalaxy APK（含 MemTonic release 附带的前置 APK）均为上述文件，`sha256 = b0bd6b5c…fa167`；若下载到的 APK 指纹不符，请勿安装。
 
 ### v0.2.36-ksu330（增强变体）
 
@@ -150,6 +160,7 @@ cd s9180-rootmygalaxy
 |---|---|---|
 | `rootmygalaxy-0.2.36-fzg1` | 上游原版（未修改） | 见 Release 页 |
 | `rootmygalaxy-0.2.36-ksu330` | `scripts/build_ksu330_apk.py` 对原版做**最小差异替换**（仅内嵌 ksud 资产 + feed size），全部 139 个条目中 136 个逐字节一致 | 见 Release 页 |
+| `rootmygalaxy-0.2.36-ksu331` | 与 ksu330 同型最小差异替换（仅内嵌 ksud 换 **v3.3.1/32680**，exploit 链路逐字节一致），配套 Manager v3.3.1 | 见 Release 页 |
 
 App 基线来自上游 Root-My-Galaxy（Apache-2.0），内核侧补丁衍生自 KernelSU（GPL-3.0），
 audit 工具取自上游 Payloads 仓库（Apache-2.0），许可证归属详见 LICENSE 与上方说明。
