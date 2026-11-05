@@ -1,8 +1,12 @@
 # RMG MemTonic —— SM-S9180 内存与异常守护模块
 
-- 模块 ID：`rmg_memtonic` ｜ 版本：v1.12.9 ｜ 适用：Galaxy S23 Ultra（SM-S9180，dm3q）KernelSU 临时 Root（late-load）方案
+- 模块 ID：`rmg_memtonic` ｜ 版本：v1.13.12 ｜ 适用：Galaxy S23 Ultra（SM-S9180，dm3q）KernelSU 临时 Root（late-load）方案
 
 ## 版本历史
+
+- **v1.13.12（2026-11-04）**：FR-RN1 雷鸟治理代码审计后五缺陷修复——restore 逐条 Tgid 归属校验（防 tid 复用误伤）、`oom_score_adj ≤300` 眼镜活跃判据（投屏/息屏场景手机焦点不可靠）、风暴期 governor 可达（仅还原不降权）、cpu_guard 退出与 `memtonic.sh stop` 双路径清场、memo 激活态门控（`AlwaysOnAiRunti` VAD 存在即不降权）；WebUI P0/P1 一致性补强：堆危机可视化（`ssheap` 阈值带 460/480/485/496MB）、状态与约束透明（版本/四守护/root/FR-RN1 旁路/rollback enabling）、5 张能力计数卡（`collect_stats` 追加 flush/gcboost/ssprobe/forecast/bt3）、建议横幅按 `reason=` 三套文案、start 幂等状态机与异常横幅、软重启文案统一为「倒数第二手段·模块绝不代执行」。单测 43/43 + 114/114，7 步部署全绿、零守护重启。
+
+- **v1.13.0~1.13.11（2026-10-26~11-03）**：干预经济学重构（批量 renice 引擎，fork ~220→~6/轮）、FR-C3 风暴态（1h≥6 次维持护航、30min 硬顶）、FR-SS 升级链（trim→复测→真泄漏建议）、GC 危机加速（堆≥480MB 提权 ART GC 守护线程）、内存余量预测器与前置压实（avail<2.5GB 且 swap>7.5GB 连续 3 轮）、耗电治理 V2（fluency_shield 日均 CPU 7.9h→7.5% 单核，-88%）、核亲和约束（fg-service CPU 大户迁 background cpuset）、FR-BT3 双通道、日志轮转竞争修复、rollback 拆雷、FR-RN1 雷鸟后台线程降权。完整逐版本记录见 `CHANGELOG.md`。
 
 - **v1.12.9（2026-10-23）**：system_server 堆高水位防护 FR-SS（460MB trim / 485MB 告警双水位 + 1800s 定期兜底探测，封堵"堆爬升但 RSS 未越限"盲区）+ `ss_heap_probe` 探测经济性（单次 dumpsys，判定与快照共用）+ FR-BT2 防抖入与 90s 还原冷却 + 高 CPU 退避（cpu_psi≥35% 抑制 FR-BT/BT2 新增提权，防干预风暴饿死 GC）+ collect_stats/WebUI 新增 `ssheap` 实时字段 + 版本串五处统一。源自 10-22 system_server OOM 498MB 取证；`am send-trim-memory RUNNING_CRITICAL` 实测对 system_server 可用但弱效。
 

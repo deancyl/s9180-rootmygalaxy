@@ -234,6 +234,23 @@ stop)
     rm -f "$RUN/cpu_rogue_renice.lst" 2>/dev/null
   fi
 
+  # v1.13.12(P1-4 完整版): FR-RN1 降权还原——cpu_guard 被 pkill -9 时退出清场不可达，
+  # stop 兜底补齐（Tgid 归属校验语义与 cpu_guard.sh rayneo_restore_all 一致）
+  if [ -s "$RUN/rayneo_governor.lst" ]; then
+    _rnrp=$(pidof com.rayneo.venus.pub 2>/dev/null | awk '{print $1}')
+    while read -r tid on comm; do
+      case "$tid" in ''|*[!0-9]*) continue;; esac
+      [ -d /proc/$tid ] || continue
+      _tg=$(awk '/^Tgid:/{print $2; exit}' /proc/$tid/status 2>/dev/null)
+      case "$_tg" in ''|*[!0-9]*) continue;; esac
+      { [ -n "$_rnrp" ] && [ "$_tg" = "$_rnrp" ]; } || continue
+      cur=$(nice_of "$tid"); [ -n "$cur" ] || continue
+      renice -n $((on - cur)) -p "$tid" >/dev/null 2>&1
+    done < "$RUN/rayneo_governor.lst"
+    rm -f "$RUN/rayneo_governor.lst" "$RUN/rayneo_notified" 2>/dev/null
+  fi
+
+  touch "$RUN/.clean_stop" 2>/dev/null   # v1.13.4: 正常收尾标记（boot_postmortem 判异常中断用）
   logx E "event=stop"
   update_module_desc   # v1.11.0: 停止时刷新卡片描述（守护:stopped）
   echo "守护循环已停止，所有子进程已终止，所有降权已还原。"
@@ -283,7 +300,9 @@ if [ -n "$_existing" ] && [ -d "/proc/$_existing" ] && grep -q memtonic /proc/$_
 fi
 check_root_liveness
 echo "$$:$(pid_starttime $$)" > "$PIDF"
-logx E "event=start ver=1.12.9 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
+logx E "event=start ver=1.13.12 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
+# v1.13.4: 启动善后横幅（P2）——上次会话异常中断检测 + boot reason + rescue 计数
+boot_postmortem
 
 # 即刻触发一次 Staged Rollback 检测（事前告警，防误重启丢 Root）
 check_staged_rollback
@@ -373,13 +392,29 @@ while true; do
           case "$rb_cnt" in ''|*[!0-9]*) rb_cnt=0;; esac
           if [ "$rb_cnt" -gt 0 ]; then
             logx W "warn=kswapd_growth delta_ms=$ks_delta note=soft_reboot_suppressed reason=staged_rollback_active count=$rb_cnt"
+            # v1.13.5 (I5): 被门控抑制时同步落 WebUI 横幅（决策透明化——11:32 只写日志没进横幅的缺口）
+            echo "kswapd_delta_ms=$ks_delta rollback_count=$rb_cnt ts=$(date '+%m-%d %H:%M:%S')" > "$RUN/reboot_suppressed.flag" 2>/dev/null
+            notify_alert rollback "MemTonic: kswapd恶化($(( ks_delta / 1000 ))s/h)但存在$rb_cnt条staged rollback——暂缓软重启,先拆rollback雷"
           else
             logx W "warn=kswapd_growth delta_ms=$ks_delta suggest=soft_reboot reason=memory_thrashing"
+            # v1.13.5 (I5): 未被抑制时落 soft_reboot_advised.flag（此前只写日志，用户看不见）
+            [ -f "$RUN/soft_reboot_advised.flag" ] || echo "advised=$(date '+%m-%d %H:%M:%S') reason=memory_thrashing kswapd_delta_ms=$ks_delta" > "$RUN/soft_reboot_advised.flag" 2>/dev/null
+            [ -f "$RUN/reboot_suppressed.flag" ] && rm -f "$RUN/reboot_suppressed.flag" 2>/dev/null
+            notify_alert advise "MemTonic: 换页压力恶化(kswapd $(( ks_delta / 1000 ))s/h)——建议择机软重启,重启前确认无rollback"
           fi
           # v1.10.0 P1-2: kswapd 每小时烧 >90s CPU = 换页风暴实锤，顺手触发一次压实
           # （风暴级例外通道，亮屏也放行；kswapd 判定 1h 一次天然限频，无叠加风险）
           # 相机/截屏守卫在 maintenance 内部无条件生效
           maintenance ks_growth_compact 1
+        fi
+        # v1.13.6 (F1): kswapd 健康时清除自己落的 memory_thrashing 建议（属主保护，不动他方旗标）
+        if [ "$ks_delta" -lt 90000 ] && [ -f "$RUN/soft_reboot_advised.flag" ]; then
+          case "$(cat "$RUN/soft_reboot_advised.flag" 2>/dev/null)" in
+            *reason=memory_thrashing*)
+              rm -f "$RUN/soft_reboot_advised.flag" 2>/dev/null
+              logx I "act=kswapd_recovered delta_ms=$ks_delta msg=换页压力回落_软重启建议已撤除"
+              ;;
+          esac
         fi
       else
         logx S "health_snap avail_kb=$(avail_kb) swap_used=${sw}KB psi_cpu=$(psi_val cpu some) psi_mem=$(psi_val memory some) psi_io=$(psi_val io some) kswapd_pid=$ks_pid kswapd_delta_ms=NA"

@@ -2,6 +2,205 @@
 
 ---
 
+## [v1.13.12] - 2026-11-04
+
+> 源自 v1.13.11 FR-RN1 代码审计（结合 11-04 memo 正式激活实测）：五处缺陷修复。当日实测推翻一个前提——memo 激活期 59% CPU 的大头是 spdy-0(14%)/ACCS0(9%)/process-memory(7%)/HeapTaskDaemon(4%)，**均不在降权名单且不可触碰**，名单治理上限仅 ~8-10%，误伤面反而扩大——由此 P1-5 从候选升级为必修。
+
+### 修复（P0/P1 五项）
+
+- **P0-1 tid 复用误伤防护**：rayneo_restore_all 与死条目清理逐条加 Tgid 归属校验（/proc/\<tid\>/status 的 Tgid 字段 == 当前 RayNeo pid；Tgid 不在 stat 文件中）。tid 是全局递增可复用资源：进程死亡后旧 tid 可被无关进程复用，仅存在性检查的 renice 会误伤无辜线程。进程已死时活 tid=复用 → 全部跳过（死线程 nice 随 task_struct 释放，无需还原）
+- **P0-2 眼镜活跃判据重构**：手机屏幕焦点≠眼镜使用状态（11-04 实测投屏场景焦点=NotificationShade）。改用 /proc/\<rpid\>/oom_score_adj ≤300 探针（top=0/visible/FGS perceptible≈100-200/纯后台 cached 900+），零 dumpsys 成本；失败安全方向=漏治理不误伤
+- **P1-3 风暴期 governor 可达**：原挂载点在 scan_cpu_rogue 尾部，主循环 STORM continue 整轮跳过导致风暴期连还原都不可达。STORM 分支新增轻量调用 rayneo_governor "" storm（判活/还原/死条目清理可达，不新增降权）
+- **P1-4 守护退出清场补漏（双路径）**：cpu_guard 退出路径补 rayneo_restore_all（原只还原 rogue 降权，漏 FR-RN1 状态）；memtonic.sh stop 兜底同样补 FR-RN1 还原块（cpu_guard 被 pkill -9 时退出清场不可达），带同语义 Tgid 归属校验
+- **P1-5 memo 激活态门控**：rayneo_memo_active() 探测 VAD 载体线程（AlwaysOnAiRunti*）存在 → 跳过降权并还原历史降权。激活期治理交给 fluency_shield 既有护航（实测 15:51-15:54 三轮 activate/deactivate 循环工作正常）。判定链顺序固定：flag → 进程 → memo → 眼镜活跃 → 清理 → [storm 止步] → 降权（memo 检查必须在 adj 之前，否则被 adj 短路）
+
+### 兼容性
+
+- 无接口变更；RN_STATE/disable flag 文件格式不变（状态档 3 列格式保持，Tgid 动态校验无需存档）；旁路 flag 语义不变
+- 部署后 governor 保持旁路（disable_rayneo_guard 存在），移除时点由用户决定——移除后 memo 未激活且眼镜闲置期开始治理
+
+## [v1.13.11] - 2026-11-03
+
+> 源自用户提供的 RayNeo 全天智记能效提案（另一会话 RFC）评审：后台 Flutter 渲染/池线程空转实测 52% CPU（22s 差分，pid 5635），主线程 20% 为 memo 本体不可动。v1.0-RFC 的 taskset 单核方案经评审否决（与 AMS cpuset 管理竞态 + 单核钉死危及 memo 音频路径），改为线程级降权方案。
+
+### 新增
+
+- **FR-RN1 雷鸟全天智记后台治理**：后台（非焦点）时对浪费线程降权至 +10——仅匹配显式命名（raster/pool-*/DefaultDispatch*/DartWorker*/DefaultExecutor*/AMap*），**绝不触碰**主线程、AlwaysOnAiRunti(VAD)、音频线程、process-memory(GC)。GEMINI 铁律：nice≤-10 跳过（实测 DartWorker -10 在保护线内）。幂等设计：新 churn 线程下轮自动补齐（22s 实测 245→252 线程 churn）。还原三通道：焦点切回秒级还原/进程死亡自动清理/disable flag 一键旁路+启动自愈
+- **通知**：每 episode 首次降权通知一次（还原时清除标记）
+
+### 诚实预期
+
+- 实测基线 52%（22s 差分）；可回收空间 = pool 线程 20-25%，现实预期 **52%→~35%**（非 RFC 声称的 8%——主线程 20% 为 memo 本体不可降）。收益为电池/发热（小核 0-2 的持续燃烧），前台流畅度本就不受小核直接影响
+- **风险与验收**：pool 线程可能承载 memo 异步工作（转写上传/缓存写入）——降权后 memo 保存可能变慢（用户已接受「变慢不要紧」）；**验收项 = 转写内容完整性**（用户次日核对智记记录）
+
+### 兼容性
+
+- 无接口变更；rayneo_governor.lst 新文件（$RUN 内）；disable flag = $RUN/disable_rayneo_guard（touch 即旁路+全量还原）
+
+## [v1.13.10] - 2026-11-01
+
+> 源自 11-01 晚间实时诊断：Syncthing 200% + 群晖相册 209% 双备份马拉松（前台服务豁免 FR-11 盲区），手工核亲和约束立竿见影（200%→12.9%）——本版将该手工操作机制化。
+
+### 新增
+
+- **FR-11 例外升级：fg-service CPU 大户核亲和约束**。前台服务应用 CPU >50%×3 窗口（与毒瘤同阈值）→ 约束至 /dev/cpuset/background（小核 0-2）而非无条件豁免——大核立即还给前台，任务变慢但不断，零优先级冲突。解除：CPU <20%×2 窗口自动还原原始 cpuset 组；用户打开被约束应用立即还原；被约束进程死亡自动清理记录。top-app cgroup 豁免保持（微信扫码/JIT 等内核最高优先级场景不受影响）；焦点/白名单/相机豁免全部前置保持
+- **通知**：约束时 notify（2h 限频，含应用名与还原说明）
+
+### 安全论证
+
+- 核亲和 = 调度约束非优先级惩罚：不影响其他进程、任务正确性无损、完全可逆（还原原始组一条 echo）；约束上限 2 并发（多大户排队逐个处理）；相机/截屏/风暴/焦点/白名单/top-app 六重豁免全部保持
+
+## [v1.13.9] - 2026-11-01
+
+> 源自 11-01 午间卡顿审计：12-13 时高拥堵 41 次/2h（cpu_psi≥40%），majflt 峰值 89 万/min，前兆（avail 3.4→2.0GB 斜率 + swap 6→8.6GB）在 12:00 前已可见——但当时模块只报灾难不预测。
+
+### 新增
+
+- **内存余量预测器（P-A）**：cpu_guard 60s 循环读 /proc/meminfo（<1ms），MemAvailable <2.5GB 且 SwapUsed >7.5GB 连续 3 轮确认 → 预测态：通知推送（2h 限频）+ mem_forecast.flag；MemAvailable ≥3GB 滞后带解除。以 11-01 为例：通知会在 12:15 前到达，比 12:46 灾难峰早 30 分钟+
+- **预测态前置压实（P-B）**：预测态内 MemAvailable <2.2GB → 前置压实（30min 限频）——把 13:50 型弱杠杆压实提前到峰值之前。复用 do_fg_compact 全套保护（mkdir 锁/共用冷却/相机与截屏/风暴让位）
+- **通知行动分级**（承接 v1.13.8）：fails≥2 建议措辞已升级
+
+### 安全论证
+
+- 预测器稳态成本：每 60s 一次 /proc/meminfo awk（<1ms），无新增进程；前置压实走 do_fg_compact 既有锁与冷却（与息屏/风暴压实共用 last_compact.ts 防叠加），相机/截屏/风暴活动时自动让位；滞后带（2.5 开 / 3.0 关）防抖动
+
+### 兼容性
+
+- 无接口变更；mem_forecast.flag / mf_confirmed / mf_compact.ts 新文件（$RUN 内）；亮屏禁压实铁律的例外边界扩展至「预测态 + avail<2.2GB」（两害相权：短暂压实 vs 持续换页风暴）
+
+## [v1.13.8] - 2026-10-30
+
+> 源自第三次同型 OOM（10-30 14:13 HeapFull 495MB）的机制链复盘：三次 OOM 共同死因是「CPU 饱和饿死 GC」——堆满不是分配太多，是回收被饿死。现有手段全部作用在链路两端，未触及中间环节。
+
+### 新增
+
+- **GC 危机加速（gc_boost，核心前置干预）**：堆 ≥480MB（距 495MB OOM 线 15MB）或泄压失败≥2 时，将 system_server 内 ART GC 守护线程（HeapTaskDaemon/ReferenceQueue*/Finalizer*，comm 前缀识别容忍 15 字符截断）提权至 -10——让 GC 在 CPU 争抢中插队、加快回收、压制死亡螺旋；堆 <450MB 自动还原。GEMINI 铁律（已 ≤-10 跳过）+ 差分 bak + 还原 delta 法，与既有护航同构。成本模型：纯事件驱动（仅危机窗口一次线程扫描 + 4 次 renice），稳态零开销
+- **通知行动分级**：fails≥2 的软重启建议措辞升级（「择机」→「尽快止损」）并注明 GC 加速已介入；gc_boost 介入/解除各发一次通知（2h 限频）
+
+### 安全论证
+
+- renice 可逆、只动 GC 守护线程（不影响其他线程优先级）、堆 <450MB 自动还原、软重启后 bak 含死 tid 自动无害化（既有 delta 还原模式天然处理）
+- 诚实边界：不保证救活（分配速度可能超过提权后的 GC）——救不活时通知链仍是兜底；本次干预的目标是把 13:19 型预警到 14:13 型 OOM 之间的 54 分钟窗口变成可缓解窗口
+
+### 兼容性
+
+- 无接口变更；gc_state 进程内变量（cpu_guard 作用域）；gc_boost.bak 新文件（$RUN 内）
+
+## [v1.13.7] - 2026-10-30
+
+> 源自 10-30 深度巡检：日志并发写撕裂实锤 + bt3 死亡间隙盲区实锤（RayNeo 25279→5628 换代 0 触发）。
+
+### 修复
+
+- **R2 bt3 死亡间隙盲区**：旧触发条件要求新旧 pid 双非空——app 死亡>5 秒（崩溃重启典型时长）时基线被清空、复活瞬间漏检（实证：RayNeo 25279→5628 换代整窗口零触发）。改用 `_rn_seen` 常驻存活标志：**见过→复活即触发，不限间隙**；死亡滞留不误触发；守护重启首轮只建基线不触发。覆盖：快换代（同 tick）、死亡复活（跨 tick）、应用更新三类场景
+- **R3 日志并发写撕裂**：logx 轮转由 `tail+mv`（孤儿化并发写者 fd，10-30 实证 1/4041 行撕裂）改为 **cp+truncate 保 inode**——mkdir 锁防多进程同时轮转、cp 全量留档 `.old`（比旧方案 tail-256KB 保留更多历史）、truncate 原地清空使并发 append 无损续写
+
+### 运营
+
+- **R1 rollback 拆雷（部分）**：tzdata6 孤儿会话（1380526714/originalSessionId 1655757987）已 `pm install-abandon` 成功拆除；adservices 套件会话（1666563512/357665197）**属主为 Google Play services，root/system uid 均被 SecurityException 拒绝**，shell 不可拆除——残留风险由 F3/I5 门控缓解（rollback 武装期间软重启建议正确抑制），boot_postmortem 持续监控 boot reason
+
+### 兼容性
+
+- 无接口变更；bt3 触发语义扩展（死亡复活场景新增，原快换代场景不变）；日志轮转对外行为不变（memtonic.log 路径/格式不变，新增 memtonic.log.old 存档）
+
+## [v1.13.6] - 2026-10-29
+
+> 源自「用户没有收到任何提示」审计：告警旗标被 FR-SS 误删（30 分钟存活期）+ 模块无主动推送通道（提示只在 WebUI 内可见）。
+
+### 修复
+
+- **F1 旗标属主保护**：soft_reboot_advised.flag 曾被 FR-SS 恢复路径无条件清除（堆 <460MB 时每 30min 清一次），换页/kswapd 的建议存活期 ≤30min、横幅窗口随之消失——现在每条路径只清自己落的旗标（按 reason= 前缀判属主）：FR-SS 清 trim_ineffective/relief_fail，paging_storm 清 paging_storm（新增：风暴解除时连建议一起清），kswapd 清 memory_thrashing（新增：健康时清）
+- **F3 paging_storm 门控补修**：换页风暴持续建议软重启前先查 `dumpsys rollback`（与 kswapd 路径对齐）——rollback 武装时改落 reboot_suppressed 抑制提示，不再给出「软重启→回滚应用→全量重启丢 root」的危险建议
+
+### 新增
+
+- **F2 通知推送（核心）**：`notify_alert <类型> <文本>`——关键告警发生时经 `cmd notification post`（root 通道，10-29 实测 exit=0）直接推送 Android 通知；按类型 tag 区分、每类 2h 限频去重。覆盖：软重启建议（堆 trim 无效/泄压失败/换页持续/kswapd 恶化）、开机善后（非常规重启原因）、回滚征兆（CrashRecovery 回滚中/建议被抑制）、换页风暴 onset。**纯事件驱动零稳态开销**（无新增轮询/进程，仅在告警落旗标时刻一次 binder 调用）
+- **WebUI 无需改动**（横幅渲染 v1.13.5 已就绪，F1 修复后旗标存活期恢复设计语义）
+
+### 兼容性
+
+- 通知权限：Samsung shell_cmd 通道免授权（系统级）；无接口变更；旗标文件格式向后兼容（新增 reason= 前缀仅用于属主判定）
+
+## [v1.13.5] - 2026-10-28
+
+> 源自 10-27→10-28 23h 巡检取证：两次软重启（换页压力→system_server 饿死）、BT2 churn（每 40 分钟一轮 boost/restore）、软重启建议被门控抑制但只在日志不可见。
+
+### 新增（I1/I2/I4/I5）
+
+- **I1 BT2 风暴态**：1h 窗口 ≥4 次 bt2 触发进入维持模式（不反复 boost/restore），15 分钟无触发或 30min 硬顶一次性还原——复用 FR-C3 风暴态同型机制，治 churn（昨晚 18:50-23:25 实测 11 轮 → 预期 0 轮/小时）
+- **I2 换页风暴前置泄压**：majflt 灾难级（>10 万/60s，10-28 11:31 实证 13.6 万→11:37 软重启）落 `paging_storm.flag`（WebUI 横幅）+ 持续 2 次/10min 落 `soft_reboot_advised.flag`（reason=paging_storm）；换页回落 300s 自动清旗标
+- **I4 RSS 趋势告警**：ss_health_probe 连续 3 次探测 RSS>900MB 且斜率上升 → `rss_warn.flag`（WebUI 横幅）；RSS 回落自动清除（Java 堆水位管不了 native，纯预警）
+- **I5 门控透明化**：soft_reboot 建议被 staged_rollback 抑制时同步落 `reboot_suppressed.flag`（WebUI 横幅）；未被抑制时落 `soft_reboot_advised.flag`（此前只写日志用户看不见）
+- **WebUI 横幅扩展**：合并六类信号（软重启建议/开机善后/回滚征兆/换页风暴/RSS 膨胀/抑制提示）
+
+### 兼容性
+
+- 无接口变更；新增旗标文件（paging_storm/rss_warn/reboot_suppressed）为纯增量；I1 复用既有批量引擎与 BT2 备份语义；fluency/cpu_guard 主循环结构零改动
+
+## [v1.13.4] - 2026-10-27
+
+> 源自 10-27 重启循环（8+ 次干净重启，CrashRecovery 回滚 adservices.api 触发 `reboot,rollback_staged_install()`）的全链条取证与代码级复盘。
+
+### 修复
+
+- **ss_heap_relief 冷却 bug（W1，10-27 09:53 实证）**：旧实现在 `am send-trim-memory` 调用前就写冷却时间戳——system_server 饱和期 am 不可达时泄压失败，却照样消耗 600s 冷却，二次泄压被静默拦截，直至崩溃期间堆完全失明。现改为：**冷却戳仅在成功后写入**；失败计入 `SS_TRIM_FAILS` + 120s 短退避强制复测（新常量 `SS_TRIM_RETRY=120`）；**ALERT 水位（485MB）下失败**（system_server 连 trim 都收不到的恶化信号）直接落 `soft_reboot_advised.flag`（reason=relief_fail）+ E 级日志。复测路径落旗标前增加防覆盖判断（不覆盖 relief_fail 旗标）。
+
+### 新增
+
+- **boot_postmortem 启动善后横幅（W3）**：模块启动时一次性读取 `sys.boot.reason(.last)` + `sys.rescue_boot_count` + `persist.sys.rescue_level`，结合 `.clean_stop` 标记判断上次会话是否被异常终止；回滚/内核 panic/watchdog 类原因落 E 级，非常规原因（如 shell 级重启）落 W 级，均写 `boot_context.flag` 供 WebUI 横幅展示；常规原因仅 I 级留档。stop 路径新增 `.clean_stop` 标记（正常收尾证据）。
+- **CrashRecovery 回滚征兆观察（W2，cpu_guard）**：对 `/data/system/crashrecovery-events.txt` 做 stat 级 size-diff（300s 节奏，单次 `wc -c` <1ms），文件增长才 tail 增量解析 `Rolling back <pkg>. Reason:` 行，命中即 E 级日志 + `rollback_warn.flag`。10-11 事件中救助链从回滚到重启仅 ~25 秒，v1.9.11 孤儿回滚哨兵（小时级 poll）无法覆盖此窗口，本观察器负责在案发瞬间把警报到眼前；自动拆除（install-abandon）默认不做，决策留给用户。
+- **WebUI 横幅扩展**：advise 横幅合并展示软重启建议 / 开机善后 / 回滚征兆三类信号。
+
+### 兼容性
+
+- 无接口变更：`collect_stats`/`memtonic.sh` 动作集/`module.prop` 结构/`update_module_desc` 均未动；新增旗标文件（boot_context.flag、rollback_warn.flag）为纯增量读取；fluency_shield.sh 本版零改动。
+
+## [v1.13.3] - 2026-10-27
+### Fixed（v1.13.2 部署后实测仍 ~64% 单核——剖析修正锁定真凶，耗电治理第二轮）
+- **find_camera_provider 缓存化（最大单项）**：原实现每次调用全盘 /proc 扫描（~900 进程 × strings+head ≈ 2.2s CPU），被 FR-C3 每 20s 探测调用 = **均摊 ~560ms/tick ≈ 11% 单核**。改为缓存：命中且 /proc/<pid> 存活 + cmdline 校验（camera.provider）+ TTL<300s → 直接返回（~2ms）；provider 重启由存活/cmdline 兜底。
+- **FR-C3 D 状态扫描单次 awk**：原 66 tid × 66 awk fork 每 20s → 单 awk 读全部 task stat（FNR==1 逐文件，comm 剥离后 f[1]==D）。
+- **PSI 零 fork 化**：FR-9 与 FR-C3 的 4 次 psi_val（awk）改 mksh read 直读 /proc/pressure/*（零 fork）。**口径统一变更：PSI 百分整数 0-10000**（35%=3500）——高 CPU 退避（bt1/bt2 `-lt 35`→`-lt 3500`）与 FR-C3 触发（`-ge 35`/`-ge 10`→`-ge 3500`/`-ge 1000`）阈值同步换算；shield_activate 日志字段改 psi_int/cpu_psi_int。
+### Verified
+- 剖析账本修正（v1.13.1 bench 公式 20 倍偏差纠正后重测）：find_camera_provider ~560ms/tick 均摊 + focused_pkg 40ms + bt3 80ms + date/pidof/psi 等小件 ≈ 每 tick 1s 量级 → 解释 fluency 50-64% 单核；部署后以 120s CPU 增速采样验证（目标 <10%）。
+
+---
+
+## [v1.13.2] - 2026-10-27
+### Fixed（耗电治理——10-27 用户报告耗电异常，取证 fluency 日均 CPU 28,489s = 7.9h = 50% 单核，占整机 cpu 功耗桶的主要份额之一）
+- **tick 时间合并**：循环顶部一次 `date +%s` 全循环复用（原 6 次 date fork+exec ≈120ms/tick——fork+exec 二进制含动态链接开销，是 tick 内单项最大开销）。
+- **focused_pkg(dumpsys window ~40ms) 降频 5s→10s**：非采样 tick 沿用上一状态；相机激活/退出判定延迟 ≤10s（相机启动到可拍摄 >2s，可接受，如实记录 trade-off）。
+- **FR-BT3 logcat 辅助通道降频 5s→20s**（实测 ~80ms/次）：pid 换代主通道仍在 5s 层兜底；20s 采样周期 < 3000 行≈60s 窗口，不致盲。
+- **bt1/bt2/bt3 触发段复用同一次 com.android.bluetooth pidof**（省 2 fork/触发）。
+- **logx 截断检查节流**：wc -c 全文件读 + fork 从每次写都查改为每 64 次写查一次（风暴期最热的隐藏 fork；日志超限最多多滞留 ~10KB）。
+- 目标：tick CPU ~400ms → ~120ms（-70%），风暴期放大同比例收敛；预期 fluency 日均 CPU 从 7.9h 降至 <1h。
+### Verified
+- 剖析数据（修正了此前 bench 公式 20 倍偏差后的重测）：focused_pkg 40ms / bt3 80ms / date 20ms×6 / pidof 20ms×2，tick 合计 ~300-400ms，风暴期放大 3-5 倍 = 50% 单核的构成解释；风暴期 fork/exec 单价暴涨（缺页）解释了"平静期组件便宜但日均 CPU 高"的表观矛盾。
+- 本次雷鸟断联（10-26 晚）双通道均未触发：应用未死（pid 未换代）+ ACL 广播未入 main buffer——logcat 广播通道在 One UI 16 确认无效化，pid 换代通道语义正确、等待首次真实样本。当前蓝牙已回连（RayNeo iO-1477 ACL BR/EDR:Y）。
+
+---
+
+## [v1.13.1] - 2026-10-26
+### Fixed
+- **FR-BT3 断联检测双通道**：新增 RayNeo 应用 pid 换代通道（16:05 实战铁证：换页风暴压死应用 26856→14948 → 伴随连接断开 → BLE 重扫；应用死亡重启是断联可靠前奏，pidof 基线每 tick 比对，+1 fork）；logcat ACL 广播通道降为辅助（One UI 16 实测断联窗口 main buffer 无广播行）。两通道任一命中即 25s 护航；logcat 通道仅在无换代时评估（短路保持 3 fork）。
+### Verified
+- 部署回归全绿（ver=1.13.1 四处统一 / 4 进程 / collect_stats）；双通道触发样本待下次断连采集。
+
+---
+
+## [v1.13.0] - 2026-10-26
+### Added（三天两起 OOM + 护航风暴取证后的干预经济学重构）
+- **护航批量引擎 guard_boost_batch / guard_restore_batch**：flush/bt/bt2 六函数内循环从逐 tid renice（每 tid 2 fork，66-110 线程 = 每轮 130-220 fork）改为两级 awk 管道（单次批量读 /proc/*/stat 去 comm 后第 17 字段=nice → sort 按增量分组 → 按组批量 renice，toybox 重复 -p 传参 ≤40 tid/批，同 storm_restore_pending 实证模式）——单轮 fork 降至 ~6。GEMINI 铁律（已优跳过）与 v1.7.0 Fix-B 差分还原语义逐字保持；bak 行格式不变。
+- **FR-C3 风暴态**：1h 滑动窗口借相机 ≥6 次进入护航维持模式——首提权后不再反复提权-还原，风暴解除（过期且触发条件消失）或 30min 硬顶一次性还原；触发判定抽为 `_frc3_trig` 供两分支复用。深夜(00-06)借相机命中记 `act=frc3_night_hit`（A 级）。
+- **FR-SS 升级链**：trim 成功后 300s 强制复测 → 未回落追加 trim（force 跳冷却）→ 连续 2 次无效=真泄漏特征 → 落 `run/soft_reboot_advised.flag` + E 级日志；堆回落自动撤除。深夜兜底探测间隔 1800→600s（小时由 epoch 换算，零新增 fork）。
+- **WebUI 软重启建议横幅**：`#advise` 卡片读取 flag 醒目展示（建议只递到眼前，绝不代重启）。
+### Fixed
+- **FR-BT3 窗口 160→3000 行**：10-23 取证致盲机制（ClashMeta DNS 风暴下 160 行 ≈1-2s 历史 < 5s 采样周期，断连广播在两次采样间老化出局）；护航结束加 90s 冷却防同一广播重复触发。dumpsys 状态差分方案否决（断连后 3-5s 即重连，30s 采样来不及护航）。
+- **日志取证窗口翻倍**：logx 截断基准 256KB→512KB（10-25 04:15 OOM 窗口审计行被风暴期流量挤出 128KB 保留面）；capture_incident 追加 64KB 主日志尾部快照。
+### Verified（真机 2026-10-26 13:31 部署，13:31-16:09 首战）
+- 批量引擎无损往返实测 PASS（自身 pid 0→-5→0）；bt2 实跑 boost 105/restore 97；FR-C3 风暴态两次完整闭环（14:03 on cnt=6 → 14:33 off 一次性还原 49；14:36 on cnt=7 → 15:06 off 51）；主护盾 16:05:54 cpu_psi 58.21% 精准护航 RayNeo 前台；日志无异常。
+
+---
+
 ## [v1.12.9] - 2026-10-23
 ### Fixed（10-22 15:47 system_server OOM 498MB 取证后修复；接手 Codex 线程收口）
 - **FR-SS system_server 堆双水位主动防护**（`mt_lib.sh` `ss_health_probe` 重构）：`SS_TRIM_KB=471040`（460MB）→ trim+审计；`SS_ALERT_KB=496640`（485MB）→ 告警+trim；trim 冷却 600s 限频；定期兜底探测 `SS_PROBE_EVERY=1800`——修复「堆爬升但 RSS/线程未越限」的探测盲区（10-22 事故堆 472→498MB 期间 RSS 门控未触发）。

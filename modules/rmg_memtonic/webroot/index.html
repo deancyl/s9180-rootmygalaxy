@@ -43,6 +43,12 @@
   #msg{font-size:12.5px;white-space:pre-wrap;margin-top:8px}
   .list{font-size:12px;color:var(--tx2);word-break:break-all}
   .hint{color:#66707b;font-size:11px;margin-top:8px}
+  .mono{font-variant-numeric:tabular-nums}
+  .heapbar{height:10px;border-radius:5px;background:var(--card2);overflow:hidden;margin-top:8px;position:relative}
+  .heapbar i{display:block;height:100%;border-radius:5px;transition:width .3s}
+  .heapbar .tick{position:absolute;top:0;bottom:0;width:1px;background:#7a8593;opacity:.75}
+  .ticks{position:relative;height:13px;margin-top:3px;font-size:10px;color:var(--tx2)}
+  .ticks span{position:absolute;transform:translateX(-50%);white-space:nowrap}
   #mask{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;padding:20px;z-index:50}
   #mask.on{display:flex}
   #dlg{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;max-width:420px;width:100%}
@@ -58,8 +64,15 @@
 
 <div class="card" style="padding:10px 14px">
   <div class="kvrow"><span class="k">守护状态</span><span id="st_state">--</span></div>
+  <div class="kvrow"><span class="k">模块版本</span><span id="st_ver" class="mono">--</span></div>
+  <div class="kvrow"><span class="k">守护细分</span><span id="st_guards">--</span></div>
+  <div class="kvrow"><span class="k">root 权限</span><span id="st_root">--</span></div>
   <div class="kvrow"><span class="k">数据更新时间</span><span id="st_ts">--</span></div>
   <div class="kvrow"><span class="k">自动刷新</span><span id="st_next">--</span></div>
+</div>
+
+<div id="advise" class="card" style="display:none;border-color:var(--warn)">
+  <div class="list" id="advise_txt" style="color:var(--warn)"></div>
 </div>
 
 <div id="errbox" class="card" style="display:none;border-color:var(--err)">
@@ -73,10 +86,36 @@
   <div class="bar"><i id="psi_bar" style="width:0%;background:var(--ok)"></i></div>
 </div>
 
+<!-- P0-1: system_server 堆危机可视化。阈值取自底层当前常量（未实施的 430MB 前移不画入） -->
+<div class="card">
+  <h2>system_server 堆危机（09:16 OOM 同型指标）</h2>
+  <div class="kvrow"><span class="k">Java Heap 当前</span><b id="st_heap" class="mono">--</b></div>
+  <div class="heapbar">
+    <i id="heap_bar" style="width:0%;background:var(--ok)"></i>
+    <span class="tick" style="left:92.7%"></span>
+    <span class="tick" style="left:96.8%"></span>
+    <span class="tick" style="left:97.8%"></span>
+  </div>
+  <div class="ticks"><span style="left:2%">0</span><span style="left:88%">460</span><span style="left:94%">480</span><span style="left:97%">485</span><span style="left:99%">496MB</span></div>
+  <div class="kvrow" style="margin-top:6px"><span class="k">水位判定</span><span id="st_heap_band">--</span></div>
+  <div class="kvrow"><span class="k">GC 加速 / 泄压失败</span><b id="st_gc_relief" class="mono">--</b></div>
+  <div class="kvrow"><span class="k">本周期止损建议 / 预测态</span><b id="st_advise_forecast" class="mono">--</b></div>
+  <div class="kvrow"><span class="k">最近探测 / 最近换页风暴</span><b id="st_probe_paging" class="mono" style="font-size:11px;font-weight:500">--</b></div>
+  <div class="hint">阈值按当前底层常量：460MB trim / 480MB GC 加速 / 485MB 告警 / 496MB OOM 线。数值来自 collect_stats.ssheap（KB）与 run/ 状态文件；危机建议与计数为本日志周期累计。</div>
+</div>
+
 <div class="card">
   <h2>事件计数（本日志周期）</h2>
   <div class="grid" id="cards"></div>
-  <div class="hint" id="logcycle">计数口径：本日志周期内累计；日志超过 256KB 自动截断后从零重新计数。</div>
+  <div class="hint" id="logcycle">计数口径：本日志周期内累计；日志超过 512KB 自动截断后从零重新计数（v1.13.0 起由 256KB 上调）。管理器卡片为事件驱动/定时刷新的快照，数值可能落后本页一次刷新，以本页「数据更新时间」为准。</div>
+</div>
+
+<div class="card">
+  <h2>状态与约束</h2>
+  <div class="kvrow"><span class="k">雷鸟治理 FR-RN1</span><span id="st_rayneo">--</span></div>
+  <div class="kvrow"><span class="k">staged rollback（enabling）</span><b id="st_rollback" class="mono">--</b></div>
+  <div class="kvrow"><span class="k">软重启策略</span><span class="t" style="max-width:64%;text-align:right;line-height:1.35">倒数第二手段；模块绝不代执行，须由您手动判断，且重启前确认无 staged rollback</span></div>
+  <div class="hint">模块全部能力均为只读观测与逐线程优先级调度；任何重启、拆回滚、停止应用的动作都不由模块发起。</div>
 </div>
 
 <div class="card">
@@ -107,7 +146,7 @@
   <div class="hint">文件位于 /data/adb/modules/rmg_memtonic/run/</div>
 </div>
 
-<div class="hint">安全边界：不杀进程 / 不冻结 / 不动 zram / 不持久修改内核参数；所有提权均逐线程且可无损还原。</div>
+<div class="hint">安全边界：不杀进程 / 不冻结 / 不动 zram / 不持久修改内核参数 / 不刷写任何分区；提权与降权均逐线程、逐一记录、可无损还原（nice ≤ -10 的既有特权线程不反向降级）；前台应用与相机调用享最高优先级；蓝牙音频与播放中应用不干预；微信消息实时性不受影响；软重启仅为倒数第二手段，模块绝不代执行，须由您手动判断；所有改动仅在临时 root 会话内生效、可验证可回滚。</div>
 
 <div id="mask"><div id="dlg"><p id="dtxt"></p><div class="dlgbtns"><button data-dlg="cancel">取消</button><button class="danger" data-dlg="ok">确认</button></div></div></div>
 
@@ -155,9 +194,12 @@
 
   // ---------- 2. busy 单飞管理（秒计 + 看门狗） ----------
   var busy = false, busyTimer = null, busyStart = 0, BUSY_WATCHDOG = 60000;
-  var buttons = [];
+  var buttons = [], startBlocked = false;   // P1-2: 守护已运行时禁用「启动守护并优化」
   function setDisabled(d){
-    for (var i=0;i<buttons.length;i++) buttons[i].disabled = d;
+    for (var i=0;i<buttons.length;i++){
+      var b = buttons[i];
+      b.disabled = d || (startBlocked && b.getAttribute('data-act') === 'start');
+    }
   }
   function busyOn(label){
     if (busy) return false;
@@ -222,15 +264,20 @@
   // ---------- 4. 渲染（定点更新，不整页重建） ----------
   // [id, kvKey, title, 口径说明, 触发条件的白话描述]
   var CARD_DEFS = [
-    ['shield','shield','护栏护航','系统拥堵时精准护航前台渲染链的次数','PSI 内存压力 >=15%'],
-    ['storm','storm','启动风暴','检测到启动风暴窗口的次数','system_server 重启或新生'],
+    ['shield','shield','护栏护航','系统拥堵时精准护航前台渲染链的次数','CPU PSI ≥35% 或 mem PSI ≥10%'],
+    ['storm','storm','启动风暴','框架软重启 / 开机风暴 / 借相机风暴态窗口次数','system_server 重启或 FR-C3 风暴态'],
     ['crash','crash','崩溃雷达','捕获到的崩溃 / ANR 事件数','dropbox 出现新崩溃'],
-    ['rogue','rogue','毒瘤降权','对长时间高 CPU 应用的温和降权次数','连续 3 分钟 >50% CPU'],
-    ['compact','compact','内存压实','按需执行内存整理的次数','息屏高压或 kswapd 换页风暴'],
+    ['rogue','rogue','毒瘤降权','长时间高 CPU 应用的温和降权 / 核亲和约束次数','连续 3 轮 >50% CPU'],
+    ['compact','compact','内存压实','按需执行内存整理的次数','息屏高压 / kswapd 换页 / 预测态前置压实'],
     ['blackbox','blackbox','灾难黑匣子','内存风暴时的现场快照落盘数','内存压力 >=25% 持续 2 分钟'],
-    ['rollback','rollback','地雷告警','检出 staged rollback 高危状态的次数','出现待生效的回滚任务'],
-    ['mjburst','mjburst','重负载指纹','前台 major fault 突增预警次数','每分钟缺页 >500 次'],
-    ['bt','bt','蓝牙护航','蓝牙音频栈抗争抢提权次数','蓝牙放音且系统拥堵']
+    ['rollback','rollback','地雷告警','检出 staged rollback 高危状态的次数','出现待生效 / enabling 的回滚会话'],
+    ['mjburst','mjburst','重负载指纹','前台 major fault 突增预警次数','突发 majflt（灾难级 >10 万/60s）'],
+    ['bt','bt','蓝牙护航','蓝牙音频栈 / LE-GATT 压力 / 断连重连护航次数','蓝牙放音或 GATT 压力且系统拥堵'],
+    ['flush','flush','借相机护航','face 服务借相机时提权 camera provider 线程（59-79 线程，15s 或条件消失还原）','provider 线程 D 状态 或 CPU PSI ≥35% / mem PSI ≥10%'],
+    ['gcboost','gcboost','GC 加速','堆危机时 ART GC 守护线程提权 -10 加速回收的次数','堆 ≥480MB 或泄压失败 ≥2'],
+    ['ssprobe','ssprobe','堆危机探测','system_server Java 堆水位探测与 trim 泄压次数','RSS ≥700MB / 线程 ≥600 / 定时探测 / trim 复测'],
+    ['forecast','forecast','预测与压实','内存余量预测态与前置压实次数','avail <2.5GB 且 swap >7.5GB 连续 3 轮'],
+    ['bt3','bt3','断连护航','雷鸟 BR/EDR 断连后 LE 重连窗口护航次数','ACL_DISCONNECTED(RayNeo) 广播命中']
   ];
   function buildCards(){
     var html = '';
@@ -247,6 +294,8 @@
     var el = document.getElementById(id);
     if (el) el.textContent = (val === undefined || val === null || val === '') ? '--' : String(val);
   }
+
+  /* @pure-functions-start —— 无 DOM 依赖，Node 单元测试按标记整段提取执行 */
   function parseKv(s){
     var kv = {}, toks = (s||'').trim().split(/\s+/);
     for (var i=0;i<toks.length;i++){
@@ -256,9 +305,60 @@
     return kv;
   }
   function int0(v){ var n = parseInt(v,10); return isNaN(n) ? 0 : n; }
+  function fmtMb(kb){
+    var n = parseInt(kb,10);
+    return (isNaN(n) || n <= 0) ? null : Math.round(n/1024);
+  }
+  // 阈值取自 mt_lib.sh 当前常量（未实施的 430MB 前移不画入）：
+  // SS_TRIM_KB=471040 / GC≈491520 / SS_ALERT_KB=496640 / OOM≈507904
+  var HEAP_TRIM=471040, HEAP_GC=491520, HEAP_ALERT=496640, HEAP_OOM=507904;
+  function heapBand(kb){
+    var n = parseInt(kb,10);
+    if (isNaN(n) || n <= 0) return {key:'na', label:'无数据', color:'var(--tx2)', pct:0};
+    var pct = Math.min(100, Math.round(n*100/HEAP_OOM));
+    if (n >= HEAP_OOM)   return {key:'critical', label:'临界 / OOM 线', color:'var(--err)', pct:100};
+    if (n >= HEAP_ALERT) return {key:'alert', label:'告警区 ≥485MB', color:'var(--err)', pct:pct};
+    if (n >= HEAP_GC)    return {key:'gc', label:'GC 加速区 ≥480MB', color:'#fb923c', pct:pct};
+    if (n >= HEAP_TRIM)  return {key:'trim', label:'泄压区 ≥460MB', color:'var(--warn)', pct:pct};
+    return {key:'ok', label:'正常', color:'var(--ok)', pct:pct};
+  }
+  function fmtGuard(kv){
+    // 键名与设备侧 k=${pf%.pid} 输出一致（memtonic/guard/cpuguard/fluencyshield）
+    var names = [['memtonic','主'],['guard','风暴'],['cpuguard','CPU'],['fluencyshield','护盾']];
+    var out = [], alive = 0;
+    for (var i=0;i<names.length;i++){
+      var k = names[i][0], lab = names[i][1], ok = kv['g_'+k] === 'alive';
+      if (ok) alive++;
+      out.push('<span class="badge ' + (ok ? 'b-ok' : 'b-err') + '" style="font-size:10px;padding:1px 6px">' + lab + (ok ? '✓' : '✗') + '</span>');
+    }
+    return {html: out.join(' '), alive: alive};
+  }
+  function adviseText(flagContent){
+    var m = /reason=([A-Za-z0-9_]+)/.exec(flagContent || '');
+    var rsn = m ? m[1] : 'unknown';
+    var map = {
+      trim_ineffective: 'system_server 堆 trim 两次无效（真泄漏特征）',
+      relief_fail: '堆泄压不可达（am/activity 服务不可用，接近堆上限）',
+      paging_storm: '灾难级换页风暴持续（majflt >10 万/60s）',
+      memory_thrashing: '内存抖动持续'
+    };
+    return {reason: rsn, text: map[rsn] || ('恶化特征（' + rsn + '）')};
+  }
+  function fmtCrisis(kv){
+    return {
+      gcRelief: (int0(kv.gcboost) > 0 ? 'GC 加速中' : '未介入') + ' / 泄压失败 ' + int0(kv.relief_fail) + ' 次',
+      adviseForecast: '止损建议 ' + int0(kv.advise_cnt) + ' 次 / 预测态 ' + (kv.forecast === 'ON' ? 'ON' : 'OFF'),
+      probePaging: (kv.last_probe ? String(kv.last_probe).replace('ssheap-','') : '无') + ' / ' + (kv.paging_last ? String(kv.paging_last) : '无')
+    };
+  }
+  /* @pure-functions-end */
 
   function renderStatus(kv){
     var running = kv.state === 'running';
+    startBlocked = running;                 // P1-2: 幂等保护，避免撞 start_rejected
+    setDisabled(busy);
+    var sbStart = document.querySelector('button[data-act="start"]');
+    if (sbStart) sbStart.title = running ? '守护已在运行（pid ' + (kv.pid || '?') + '），无需重复启动' : '';
     document.getElementById('st_state').innerHTML = running
       ? '<span class="badge b-ok">运行中</span> <span class="badge b-mut">pid ' + (kv.pid||'?') + '</span>'
       : '<span class="badge b-err">已停止</span>';
@@ -284,6 +384,15 @@
         else { sb.className = 'badge b-mut'; sb.textContent = '待命中'; }
       }
     }
+    // P0-1: 堆水位（collect_stats.ssheap，单位 KB）——此前该字段已采集但面板未渲染
+    var hm = fmtMb(kv.ssheap);
+    set('st_heap', hm === null ? '--' : hm + ' MB');
+    var band = heapBand(kv.ssheap);
+    var hbar = document.getElementById('heap_bar');
+    if (hbar){ hbar.style.width = band.pct + '%'; hbar.style.background = band.color; }
+    var hcls = band.key === 'ok' ? 'b-ok' : (band.key === 'trim' ? 'b-warn' : (band.key === 'na' ? 'b-mut' : 'b-err'));
+    var hbl = document.getElementById('st_heap_band');
+    if (hbl) hbl.innerHTML = '<span class="badge ' + hcls + '">' + band.label + '</span>';
   }
 
   function li(text){
@@ -311,11 +420,80 @@
       renderStatus(kv);
       var now = new Date();
       set('st_ts', ('0'+now.getHours()).slice(-2) + ':' + ('0'+now.getMinutes()).slice(-2) + ':' + ('0'+now.getSeconds()).slice(-2));
-      var r2 = await execCmd('ls -t ' + BASE + '/run/blackbox-*.log 2>/dev/null | head -5; echo ---; ls -t ' + BASE + '/run/incident-*.log 2>/dev/null | head -5', 15000);
+      // P0: 新增状态/危机链/rollback 数据全部并入本次 exec（不增加 exec 次数，省电约束）
+      var stateCmd =
+        '; echo ---; echo ver=$(grep -m1 ^version= ' + BASE + '/module.prop | cut -d= -f2) vc=$(grep -m1 ^versionCode= ' + BASE + '/module.prop | cut -d= -f2); '
+        + 'for pf in memtonic.pid guard.pid cpuguard.pid fluencyshield.pid; do p=$(cat ' + BASE + '/run/$pf 2>/dev/null); p=${p%%:*}; k=${pf%.pid}; [ -n "$p" ] && [ -d /proc/$p ] && echo g_$k=alive || echo g_$k=dead; done; '
+        + 'echo root=$(id -u); [ -f ' + BASE + '/run/disable_rayneo_guard ] && echo rayneo_bypass=ON || echo rayneo_bypass=OFF; '
+        + '_rl=$(awk "END{print NR}" ' + BASE + '/run/rayneo_governor.lst 2>/dev/null); echo rayneo_lines=${_rl:-0}; '
+        + 'echo ex_rejected=$(grep -c event=start_rejected ' + BASE + '/run/memtonic.log 2>/dev/null); '
+        + 'echo ex_rootlost=$(grep -c event=root_lost_exit ' + BASE + '/run/memtonic.log 2>/dev/null); '
+        + 'echo ---; _gb=$(awk "END{print NR}" ' + BASE + '/run/gc_boost.bak 2>/dev/null); echo gcboost=${_gb:-0}; '
+        + 'echo relief_fail=$(grep -c act=ss_heap_relief.*result=fail ' + BASE + '/run/memtonic.log 2>/dev/null); '
+        + 'echo advise_cnt=$(grep -c advise=soft_reboot ' + BASE + '/run/memtonic.log 2>/dev/null); '
+        + '[ -f ' + BASE + '/run/mem_forecast.flag ] && echo forecast=ON || echo forecast=OFF; '
+        + 'echo paging_last=$(cat ' + BASE + '/run/paging_storm.last 2>/dev/null); '
+        + '_lp=$(ls -t ' + BASE + '/run/ssheap-*.log 2>/dev/null | head -1); echo last_probe=${_lp##*/}; '
+        + 'echo ---; _rbn=0; for j in /data/rollback/*/rollback.json; do [ -f "$j" ] || continue; '
+        + 'tr -d "\\n" < "$j" 2>/dev/null | grep -q state.:.enabling && _rbn=$((_rbn+1)); done; echo rb_enabling=$_rbn';
+      var snapCmd = 'ls -t ' + BASE + '/run/blackbox-*.log 2>/dev/null | head -5; echo ---; ls -t ' + BASE + '/run/incident-*.log 2>/dev/null | head -5; echo ---; cat ' + BASE + '/run/soft_reboot_advised.flag 2>/dev/null; echo ---; cat ' + BASE + '/run/boot_context.flag 2>/dev/null; echo ---; cat ' + BASE + '/run/rollback_warn.flag 2>/dev/null; echo ---; cat ' + BASE + '/run/paging_storm.flag 2>/dev/null; echo ---; cat ' + BASE + '/run/rss_warn.flag 2>/dev/null; echo ---; cat ' + BASE + '/run/reboot_suppressed.flag 2>/dev/null';
+      var r2 = await execCmd(snapCmd + stateCmd, 15000);
       var parts = (r2.stdout || '').split('---');
       document.getElementById('bb').innerHTML = li(parts[0]);
       document.getElementById('inc').innerHTML = li(parts[1]);
-      document.getElementById('ver').textContent = 'RMG MemTonic 内存与异常守护 · 统计口径：本日志周期';
+      var adv = (parts[2] || '').trim();
+      var bootc = (parts[3] || '').trim();
+      var rollw = (parts[4] || '').trim();
+      var pagestrm = (parts[5] || '').trim();
+      var rsswarn = (parts[6] || '').trim();
+      var suppr = (parts[7] || '').trim();
+      var st = parseKv(parts[8] || '');
+      var cr = parseKv(parts[9] || '');
+      var rb = parseKv(parts[10] || '');
+
+      // P0-2: 版本 / 四守护 / root / FR-RN1 旁路 / rollback enabling
+      set('st_ver', (st.ver || '--') + (st.vc ? ' / vc' + st.vc : ''));
+      var gd = fmtGuard(st);
+      var hasGuards = false;
+      for (var gk in st){ if (gk.indexOf('g_') === 0) { hasGuards = true; break; } }
+      document.getElementById('st_guards').innerHTML = hasGuards
+        ? gd.html + ' <span class="badge b-mut" style="font-size:10px;padding:1px 6px">' + gd.alive + '/4</span>'
+        : '--';
+      document.getElementById('st_root').innerHTML = st.root === '0'
+        ? '<span class="badge b-ok">root 正常</span>'
+        : ((st.root === undefined || st.root === '') ? '--' : '<span class="badge b-err">非 root (' + st.root + ')</span>');
+      var rbx = st.rayneo_bypass;
+      document.getElementById('st_rayneo').innerHTML = rbx === 'ON'
+        ? '<span class="badge b-warn">已旁路（disable flag 存在）</span>'
+        : (rbx === 'OFF'
+            ? '<span class="badge b-ok">运行中' + (int0(st.rayneo_lines) > 0 ? ' · 已治理 ' + st.rayneo_lines + ' 线程' : '') + '</span>'
+            : '--');
+      set('st_rollback', rb.rb_enabling === undefined || rb.rb_enabling === '' ? '--' : rb.rb_enabling);
+      // P0-1: 危机链（GC 加速 / 泄压失败 / 止损建议历史 / 预测态 / 最近探测）
+      var fc = fmtCrisis(cr);
+      set('st_gc_relief', fc.gcRelief);
+      set('st_advise_forecast', fc.adviseForecast);
+      set('st_probe_paging', fc.probePaging);
+      document.getElementById('ver').textContent = 'RMG MemTonic ' + (st.ver || '') + ' · 统计口径：本日志周期';
+      var msgs = [];
+      if (adv) {
+        var at = adviseText(adv);          // P1-3: 按 flag 的 reason= 给出对应解释
+        msgs.push('⚠ 软重启建议（仅供参考，来源：' + at.reason + '）：' + at.text + '。软重启仅为倒数第二手段，模块绝不代执行，须由您手动判断；重启前确认无 staged rollback 活动。');
+      }
+      if (int0(st.ex_rejected) > 0) msgs.push('ℹ 守护启动被拒：本周期 ' + st.ex_rejected + ' 次（已有存活实例的幂等保护，无需处理）。');
+      if (int0(st.ex_rootlost) > 0) msgs.push('⛔ root 会话曾丢失导致守护退出 ' + st.ex_rootlost + ' 次——临时 root 可能已失效，请检查 KSU 会话。');
+      if (bootc) msgs.push('ℹ 开机善后：' + bootc + ' —— 非常规重启原因/救助计数/上次会话异常中断，建议核对发起者。');
+      if (rollw) msgs.push('⛔ 救助链回滚征兆：' + rollw + ' —— CrashRecovery 正在回滚模块，完整重启即将/已发生（root 将丢失）。');
+      if (pagestrm) msgs.push('🌀 换页风暴：' + pagestrm + ' —— 灾难级 majflt（>10 万/60s），软重启前兆，建议关闭大型后台应用；模块不会代执行重启。');
+      if (rsswarn) msgs.push('📊 RSS 膨胀趋势：' + rsswarn + ' —— system_server native 内存持续上升（Java 堆水位管不了），建议关注。');
+      if (suppr) msgs.push('🔒 软重启建议被抑制：' + suppr + ' —— 存在 staged rollback，重启可能触发完整重启丢 root；模块绝不代执行任何重启，请先核查 rollback。');
+      var ab = document.getElementById('advise');
+      if (msgs.length){
+        ab.style.display = '';
+        document.getElementById('advise_txt').textContent = msgs.join(' ｜ ');
+      } else {
+        ab.style.display = 'none';
+      }
     } catch(e){
       showErr('刷新异常：' + e);
     }
@@ -339,7 +517,7 @@
     refresh();
   }
   async function doStop(){
-    var ok = await confirmBox('确认停止守护？\n\n所有守护子进程将退出，已做的调度提权会无损还原。');
+    var ok = await confirmBox('确认停止守护？\n\n所有守护子进程将退出；已做的调度提权、降权与核亲和约束均会无损还原（FR-RN1 降权状态同步清场）。停止期间不再有任何护航。');
     if (!ok) return;
     if (!busyOn('停止守护')) return;
     showMsg('正在停止守护并还原调度…', '');
