@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# cpu_guard.sh -- RMG MemTonic CPU 失常护栏 + 崩溃雷达（v1.13.12）
+# cpu_guard.sh -- RMG MemTonic CPU 失常护栏 + 崩溃雷达（v1.13.13）
 # v1.13.12 (FR-RN1 hardening): P0/P1 五缺陷修复——
 #   P0-1: rayneo_restore_all/dead-entry 清理逐条 Tgid 归属校验（/proc/<tid>/status 的
 #         Tgid 字段必须等于当前 RayNeo pid；注意 Tgid 不在 stat 文件中——stat 字段 5
@@ -198,10 +198,17 @@ rayneo_restore_all() {
   return 0
 }
 # v1.13.12(P1-5): memo 激活态——VAD 载体线程存在即全天智记运行中。依赖调用方已设 rpid。
+# v1.13.13 (P2-A): memo 探针零 fork 化——11-05 性能回归根因修复。
+#   旧实现每轮遍历 ~181-221 个 RayNeo 线程，对每个线程 `$(cat comm)` 都会 fork 一次；
+#   换页风暴（20-98 万 majflt/60s）下 fork 成本暴涨，cpu_scan 由 160-240ms 升至
+#   1770-13010ms。A/B 铁证：恢复旁路 flag 后回落到 210-220ms 而 CPU PSI 未同步下降。
+#   改为 mksh 内建 `IFS= read -r`（v1.13.2 耗电治理已验证的零 fork 范式），
+#   判定语义、名单、铁律、Tgid 归属校验全部不变。
 rayneo_memo_active() {
   for _t in /proc/$rpid/task/*; do
     [ -r "$_t/comm" ] || continue
-    case "$(cat "$_t/comm" 2>/dev/null)" in "$RAYNEO_MEMO_THREAD"*) return 0 ;; esac
+    IFS= read -r _rn_comm < "$_t/comm" 2>/dev/null || continue
+    case "$_rn_comm" in "$RAYNEO_MEMO_THREAD"*) return 0 ;; esac
   done
   return 1
 }
@@ -235,7 +242,8 @@ rayneo_governor() {
   [ "$_rn_mode" = "storm" ] && return 0   # P1-3: 风暴期止步——还原/清理可达，不新增降权
   _rn_new=0
   for t in /proc/$rpid/task/*; do
-    tid=${t##*/}; comm=$(cat "$t/comm" 2>/dev/null)
+    tid=${t##*/}
+    IFS= read -r comm < "$t/comm" 2>/dev/null || continue   # v1.13.13: 零 fork（原 cat 子进程）
     case "$comm" in
       *raster*|pool-*|DefaultDispatch*|DartWorker*|DefaultExecutor*|AMap*) ;;
       *) continue ;;

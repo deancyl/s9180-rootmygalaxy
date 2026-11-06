@@ -2,6 +2,22 @@
 
 ---
 
+## [v1.13.13] - 2026-11-05
+
+> 源自 11-05 FR-RN1 移除旁路后的性能回归 A/B 取证：恢复 flag 后 `cpu_scan` 从 1770–13010ms 回落到 210–220ms 而 CPU PSI 未同步下降，确证根因是 `rayneo_memo_active()` 每轮约 181 次 `cat` fork（v1.13.12 引入 P1-5 门控时的实现缺陷）。
+
+### 修复
+
+- **P2-A 零 fork 探针**：`rayneo_memo_active()` 与降权循环的 `cat "$t/comm"` 改为 mksh 内建 `IFS= read -r`（复用 v1.13.2 耗电治理已验证范式）；判定语义、降权名单、nice≤-10 铁律、Tgid 归属校验**全部不变**。验收：移除旁路后 `cpu_scan < 300ms` 连续 5 轮。
+- **P2 WebUI 四项**：HAL tombstone 计数卡（只读文件名统计、不解压）、incident 快照摘要（reason/时间）、「重启守护」按钮（二次确认 + 全量清场说明）、自动刷新 15s→30s（省一半 shell 调用）。
+- **WebUI 四维审查后 3 项修复**：`fmtStamp()` 统一时间格式（epoch 秒/原始文件名 → `MM-DD HH:MM`）、堆危机刻度改 flex 图例（原标签 88/94/97% 与刻度线 92.7/96.8% 错位）、第二次 exec 失败/分段异常不再静默降级（补 errno 与 11 段守卫提示）。
+- **RayNeo 削峰豁免（11-06 ASR 取证）**：启动风暴窗口内 `renice_tree` 原会把 RayNeo 整进程（含音频采集 / ASR / 网络回调线程）压到 nice+5，实测 `deprioritize_rayneo=1`。在削峰路径新增 `com.rayneo.venus.pub*` 专用豁免与 `act=voice_asr_skip` 审计日志；**不修改全局 `WHITELIST_PKGS`**（它还被 FR-4 毒瘤降权与 optimize 共用），豁免面最小。
+
+### 兼容性
+
+- 无接口变更；旁路 flag / RN_STATE 格式不变；`collect_stats` 字段不变（P1 的 5 个新字段保持）。
+- 本次部署需**一次守护重启**（`memtonic.sh stop` + `service.sh` 幂等拉起）以加载新 `cpu_guard.sh`；stop 会清场还原全部降权，状态档由启动自愈处理。24h A/B 基线从部署完成时刻重新起算。
+
 ## [v1.13.12] - 2026-11-04
 
 > 源自 v1.13.11 FR-RN1 代码审计（结合 11-04 memo 正式激活实测）：五处缺陷修复。当日实测推翻一个前提——memo 激活期 59% CPU 的大头是 spdy-0(14%)/ACCS0(9%)/process-memory(7%)/HeapTaskDaemon(4%)，**均不在降权名单且不可触碰**，名单治理上限仅 ~8-10%，误伤面反而扩大——由此 P1-5 从候选升级为必修。

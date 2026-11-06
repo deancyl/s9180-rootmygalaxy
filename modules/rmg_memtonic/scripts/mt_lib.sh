@@ -39,7 +39,7 @@ MODDIR="${SCRIPT_DIR%/*}"
 RUN=$MODDIR/run          # 运行时私有目录（root 700）
 LOG=$RUN/memtonic.log    # 审计日志（超 512KB 字节基准截断，v1.13.0: 256KB→512KB 保住更长取证窗口）
 MODULE_PROP=$MODDIR/module.prop  # v1.11.0: 模块声明文件（卡片描述动态统计的写入目标）
-MT_VERSION=v1.13.12              # v1.13.12: 模块版本（与 module.prop 同步，动态描述引用）
+MT_VERSION=v1.13.13              # v1.13.13: 模块版本（与 module.prop 同步，动态描述引用）
 
 # v1.13.6 (F2): notify_alert <类型> <文本> —— 关键告警推送 Android 通知。
 # 通道实测（10-29 16:00）：root shell `cmd notification post` exit=0 可达用户 0。
@@ -433,6 +433,15 @@ storm_window() {
         logx S "act=whitelist_skip pid=$pid pkg=$pkg"
         done_pids="$done_pids$pid "; continue
       fi
+      # v1.13.13 (11-06 ASR 取证): RayNeo 眼镜语音链路豁免「整进程」削峰。
+      # renice_tree 会把音频采集 / ASR / 网络回调线程一并压到 +5，实测
+      # deprioritize_rayneo=1；只豁免启动风暴削峰这一处，不动全局白名单
+      # （in_whitelist 还被 cpu_guard FR-4 毒瘤降权与 memtonic optimize 共用）。
+      case "$pkg" in
+        com.rayneo.venus.pub*)
+          logx S "act=voice_asr_skip pid=$pid pkg=$pkg msg=眼镜语音链路豁免整进程削峰"
+          done_pids="$done_pids$pid "; continue;;
+      esac
       # v1.5.0: 动态前台服务豁免（oom_score_adj <= 200 免削峰）
       if is_foreground_service "$pid"; then
         logx S "act=fg_service_skip pid=$pid pkg=$pkg"

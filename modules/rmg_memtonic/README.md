@@ -1,8 +1,10 @@
 # RMG MemTonic —— SM-S9180 内存与异常守护模块
 
-- 模块 ID：`rmg_memtonic` ｜ 版本：v1.13.12 ｜ 适用：Galaxy S23 Ultra（SM-S9180，dm3q）KernelSU 临时 Root（late-load）方案
+- 模块 ID：`rmg_memtonic` ｜ 版本：v1.13.13 ｜ 适用：Galaxy S23 Ultra（SM-S9180，dm3q）KernelSU 临时 Root（late-load）方案
 
 ## 版本历史
+
+- **v1.13.13（2026-11-05~06）**：① 修复 FR-RN1 memo 探针性能回归——`rayneo_memo_active()` 与降权循环的 `cat comm` 改为 mksh 内建 `IFS= read -r` 零 fork（A/B 铁证：恢复旁路后 `cpu_scan` 从 1770–13010ms 回落到 210–220ms 而 CPU PSI 未同步下降）；② WebUI P2 四项——HAL tombstone 累计/最近、incident 快照 reason 摘要、「重启守护」按钮（二次确认 + 基线污染提示）、自动刷新 15s→30s；③ WebUI 四维审查后 3 项修复——时间值统一格式化、堆危机刻度改图例、第二次 exec 失败/分段异常不再静默降级；④ **RayNeo 语音链路削峰豁免**——启动风暴 `renice_tree` 原会把音频采集/ASR/网络回调线程整进程压到 nice+5（实测 `deprioritize_rayneo=1`），现于削峰路径新增 `com.rayneo.venus.pub*` 专用豁免与 `act=voice_asr_skip` 审计日志，不改全局白名单。单测 142/142，4 脚本 `sh -n` 通过。
 
 - **v1.13.12（2026-11-04）**：FR-RN1 雷鸟治理代码审计后五缺陷修复——restore 逐条 Tgid 归属校验（防 tid 复用误伤）、`oom_score_adj ≤300` 眼镜活跃判据（投屏/息屏场景手机焦点不可靠）、风暴期 governor 可达（仅还原不降权）、cpu_guard 退出与 `memtonic.sh stop` 双路径清场、memo 激活态门控（`AlwaysOnAiRunti` VAD 存在即不降权）；WebUI P0/P1 一致性补强：堆危机可视化（`ssheap` 阈值带 460/480/485/496MB）、状态与约束透明（版本/四守护/root/FR-RN1 旁路/rollback enabling）、5 张能力计数卡（`collect_stats` 追加 flush/gcboost/ssprobe/forecast/bt3）、建议横幅按 `reason=` 三套文案、start 幂等状态机与异常横幅、软重启文案统一为「倒数第二手段·模块绝不代执行」。单测 43/43 + 114/114，7 步部署全绿、零守护重启。
 

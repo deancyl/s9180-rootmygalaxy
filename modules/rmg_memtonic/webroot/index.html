@@ -96,7 +96,9 @@
     <span class="tick" style="left:96.8%"></span>
     <span class="tick" style="left:97.8%"></span>
   </div>
-  <div class="ticks"><span style="left:2%">0</span><span style="left:88%">460</span><span style="left:94%">480</span><span style="left:97%">485</span><span style="left:99%">496MB</span></div>
+  <div class="ticks" style="height:auto;display:flex;justify-content:space-between;font-size:10px;margin-top:6px">
+    <span>0</span><span style="color:var(--warn)">460 泄压</span><span style="color:#fb923c">480 GC</span><span style="color:var(--err)">485 告警</span><span style="color:var(--err)">496 OOM</span>
+  </div>
   <div class="kvrow" style="margin-top:6px"><span class="k">水位判定</span><span id="st_heap_band">--</span></div>
   <div class="kvrow"><span class="k">GC 加速 / 泄压失败</span><b id="st_gc_relief" class="mono">--</b></div>
   <div class="kvrow"><span class="k">本周期止损建议 / 预测态</span><b id="st_advise_forecast" class="mono">--</b></div>
@@ -114,8 +116,9 @@
   <h2>状态与约束</h2>
   <div class="kvrow"><span class="k">雷鸟治理 FR-RN1</span><span id="st_rayneo">--</span></div>
   <div class="kvrow"><span class="k">staged rollback（enabling）</span><b id="st_rollback" class="mono">--</b></div>
+  <div class="kvrow"><span class="k">HAL tombstone（累计 / 最近）</span><b id="st_hal" class="mono" style="font-size:12px">--</b></div>
   <div class="kvrow"><span class="k">软重启策略</span><span class="t" style="max-width:64%;text-align:right;line-height:1.35">倒数第二手段；模块绝不代执行，须由您手动判断，且重启前确认无 staged rollback</span></div>
-  <div class="hint">模块全部能力均为只读观测与逐线程优先级调度；任何重启、拆回滚、停止应用的动作都不由模块发起。</div>
+  <div class="hint">模块全部能力均为只读观测与逐线程优先级调度；任何重启、拆回滚、停止应用的动作都不由模块发起。HAL tombstone 为历史累计（含 camera provider / thermal HAL 等，非致命），类型细分见 ①A 阶段 B 采样器。</div>
 </div>
 
 <div class="card">
@@ -128,6 +131,10 @@
     <button class="wide danger" data-act="stop">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
       停止守护
+    </button>
+    <button class="wide" data-act="restart">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+      重启守护（全量清场）
     </button>
     <button class="wide" data-act="refresh">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
@@ -344,11 +351,34 @@
     };
     return {reason: rsn, text: map[rsn] || ('恶化特征（' + rsn + '）')};
   }
+  function fmtStamp(s){
+    var v = String(s || '');
+    if (!v) return '无';
+    var m = /(\d{8})_(\d{6})/.exec(v);           // ssheap-20261105_091502.log
+    if (m) return m[1].slice(4,6) + '-' + m[1].slice(6,8) + ' ' + m[2].slice(0,2) + ':' + m[2].slice(2,4);
+    if (/^\d{10}$/.test(v) || /^\d{13}$/.test(v)){   // paging_storm.last / tombstone epoch
+      var ms = v.length === 10 ? parseInt(v,10)*1000 : parseInt(v,10);
+      var d = new Date(ms);
+      return ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2)
+        + ' ' + ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2);
+    }
+    return v.slice(0, 24);                        // 未知格式：截断，不把原始串丢给用户
+  }
+  function fmtHal(cnt, name){
+    var n = int0(cnt), t = '--';
+    var m = /@(\d{13})/.exec(name || '');
+    if (m){
+      var d = new Date(parseInt(m[1], 10));
+      t = ('0' + (d.getMonth()+1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2)
+        + ' ' + ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+    }
+    return {text: n + ' 个 / 最近 ' + t, count: n};
+  }
   function fmtCrisis(kv){
     return {
       gcRelief: (int0(kv.gcboost) > 0 ? 'GC 加速中' : '未介入') + ' / 泄压失败 ' + int0(kv.relief_fail) + ' 次',
       adviseForecast: '止损建议 ' + int0(kv.advise_cnt) + ' 次 / 预测态 ' + (kv.forecast === 'ON' ? 'ON' : 'OFF'),
-      probePaging: (kv.last_probe ? String(kv.last_probe).replace('ssheap-','') : '无') + ' / ' + (kv.paging_last ? String(kv.paging_last) : '无')
+      probePaging: fmtStamp(kv.last_probe) + ' / ' + fmtStamp(kv.paging_last)
     };
   }
   /* @pure-functions-end */
@@ -435,10 +465,18 @@
         + 'echo paging_last=$(cat ' + BASE + '/run/paging_storm.last 2>/dev/null); '
         + '_lp=$(ls -t ' + BASE + '/run/ssheap-*.log 2>/dev/null | head -1); echo last_probe=${_lp##*/}; '
         + 'echo ---; _rbn=0; for j in /data/rollback/*/rollback.json; do [ -f "$j" ] || continue; '
-        + 'tr -d "\\n" < "$j" 2>/dev/null | grep -q state.:.enabling && _rbn=$((_rbn+1)); done; echo rb_enabling=$_rbn';
-      var snapCmd = 'ls -t ' + BASE + '/run/blackbox-*.log 2>/dev/null | head -5; echo ---; ls -t ' + BASE + '/run/incident-*.log 2>/dev/null | head -5; echo ---; cat ' + BASE + '/run/soft_reboot_advised.flag 2>/dev/null; echo ---; cat ' + BASE + '/run/boot_context.flag 2>/dev/null; echo ---; cat ' + BASE + '/run/rollback_warn.flag 2>/dev/null; echo ---; cat ' + BASE + '/run/paging_storm.flag 2>/dev/null; echo ---; cat ' + BASE + '/run/rss_warn.flag 2>/dev/null; echo ---; cat ' + BASE + '/run/reboot_suppressed.flag 2>/dev/null';
+        + 'tr -d "\\n" < "$j" 2>/dev/null | grep -q state.:.enabling && _rbn=$((_rbn+1)); done; echo rb_enabling=$_rbn; '
+        + 'echo hal_total=$(ls -1 /data/system/dropbox/SYSTEM_TOMBSTONE*.txt.gz 2>/dev/null | grep -c .); '
+        + 'echo hal_latest=$(ls -t /data/system/dropbox/SYSTEM_TOMBSTONE*.txt.gz 2>/dev/null | head -1 | sed "s|.*/||")';
+      var snapCmd = 'ls -t ' + BASE + '/run/blackbox-*.log 2>/dev/null | head -5; echo ---; for f in $(ls -t ' + BASE + '/run/incident-*.log 2>/dev/null | head -5); do echo "${f##*/} | $(head -n 1 $f 2>/dev/null)"; done; echo ---; cat ' + BASE + '/run/soft_reboot_advised.flag 2>/dev/null; echo ---; cat ' + BASE + '/run/boot_context.flag 2>/dev/null; echo ---; cat ' + BASE + '/run/rollback_warn.flag 2>/dev/null; echo ---; cat ' + BASE + '/run/paging_storm.flag 2>/dev/null; echo ---; cat ' + BASE + '/run/rss_warn.flag 2>/dev/null; echo ---; cat ' + BASE + '/run/reboot_suppressed.flag 2>/dev/null';
       var r2 = await execCmd(snapCmd + stateCmd, 15000);
       var parts = (r2.stdout || '').split('---');
+      // P2 审查修复：第二次 exec 失败/分段异常不再静默降级（原实现会让状态区显示 -- 却无任何提示）
+      if (r2.errno !== 0 || !r2.stdout || parts.length < 11){
+        showErr('状态明细读取不完整（errno=' + r2.errno + '，分段 ' + parts.length + '/11）：下方部分字段显示 --，主状态与事件计数仍有效。请点「刷新数据」重试。');
+      } else {
+        showErr('');
+      }
       document.getElementById('bb').innerHTML = li(parts[0]);
       document.getElementById('inc').innerHTML = li(parts[1]);
       var adv = (parts[2] || '').trim();
@@ -469,6 +507,7 @@
             ? '<span class="badge b-ok">运行中' + (int0(st.rayneo_lines) > 0 ? ' · 已治理 ' + st.rayneo_lines + ' 线程' : '') + '</span>'
             : '--');
       set('st_rollback', rb.rb_enabling === undefined || rb.rb_enabling === '' ? '--' : rb.rb_enabling);
+      set('st_hal', fmtHal(rb.hal_total, rb.hal_latest).text);   // P2: HAL tombstone 累计/最近
       // P0-1: 危机链（GC 加速 / 泄压失败 / 止损建议历史 / 预测态 / 最近探测）
       var fc = fmtCrisis(cr);
       set('st_gc_relief', fc.gcRelief);
@@ -532,11 +571,29 @@
     refresh();
   }
 
+  // ---------- 5b. P2: 重启守护（全量清场 + service.sh 幂等拉起；不调用阻塞式 restart） ----------
+  async function doRestart(){
+    var ok = await confirmBox('确认重启守护？\n\n将执行全量清场并重启四守护：调度提权、降权与核亲和约束均会无损还原，FR-RN1 状态档由启动自愈处理；期间约 5-10 秒无护航。\n\n⚠ 24h A/B 基线期重启守护会污染基线，仅在必要时使用。\n\n失败兜底：若重启后显示「已停止」，请点「启动守护并优化」恢复。');
+    if (!ok) return;
+    if (!busyOn('重启守护')) return;
+    showMsg('正在全量清场并重启守护…（约 10 秒）', '');
+    var r = await execCmd('sh ' + BASE + '/scripts/memtonic.sh stop; sleep 2; sh ' + BASE + '/service.sh; sleep 6; cat ' + BASE + '/run/memtonic.pid 2>/dev/null', 60000);
+    busyOff();
+    var out = (r.stdout || '').trim() || (r.stderr || '').trim();
+    if (r.errno === 0 && out){
+      showMsg('守护已重启（pid ' + out.split(':')[0] + '）。请确认下方状态为「运行中」。', 'ok');
+    } else {
+      showMsg((out || ('执行失败（errno=' + r.errno + '）')) + ' —— 若守护未恢复，请点「启动守护并优化」', 'err');
+    }
+    refresh();
+  }
+
   // ---------- 6. 事件委托：按钮无内联 onclick，未定义动作会在 default 报错而非静默失效 ----------
   function onAction(act){
     switch(act){
       case 'start': doStart(); break;
       case 'stop': doStop(); break;
+      case 'restart': doRestart(); break;
       case 'refresh': refresh(); break;
       default: showMsg('未知操作：' + act, 'err'); break;
     }
@@ -553,7 +610,7 @@
   });
 
   // ---------- 7. 自动刷新（仅在页面可见且空闲时） ----------
-  var AUTO_SEC = 15, nextTs = Date.now() + AUTO_SEC*1000;
+  var AUTO_SEC = 30, nextTs = Date.now() + AUTO_SEC*1000;   // P2: 15s→30s，省一半 shell 调用
   setInterval(function(){
     var left = Math.ceil((nextTs - Date.now())/1000);
     set('st_next', left > 0 ? (left + ' 秒后') : '即将刷新');
