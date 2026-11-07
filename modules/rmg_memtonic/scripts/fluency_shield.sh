@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# fluency_shield.sh —— RMG MemTonic 前台护盾 (FR-9) + Camera Sentinel + Screenshot Sentinel + BT Sentinel + FR-C3 Flush Sentinel (v1.13.14)
+# fluency_shield.sh —— RMG MemTonic 前台护盾 (FR-9) + Camera Sentinel + Screenshot Sentinel + BT Sentinel + FR-C3 Flush Sentinel (v1.13.15)
 # FR-9: PSI 内存压力飙升时精准提权前台渲染链（SurfaceFlinger + 主线程 + RenderThread）。
 # FR-C Camera Sentinel: 每 5 秒嗅探 media.camera，相机激活时提权 HAL 服务。
 # FR-S Screenshot Sentinel: 监控截屏目录文件数，截屏后 30 秒内对前台 App 提权防卡顿。
@@ -38,7 +38,7 @@
 #     0-10000，高CPU退避/FR-C3 触发阈值同步换算 35→3500、10→1000）。
 . "$(dirname "$0")/mt_lib.sh"
 echo $$ > "$RUN/fluencyshield.pid"
-logx E "event=fluency_shield_start ver=1.13.14 msg=FR-9+CameraSentinel+ScreenshotSentinel+BTSentinel+FR-C3FlushSentinel+FR-BT3双通道+FR-C3风暴态+BT2风暴态+批量提权引擎+耗电治理V2+通知推送+死亡间隙修复+GC加速+内存余量预测+核亲和约束+RayNeo治理"
+logx E "event=fluency_shield_start ver=1.13.15 msg=FR-9+CameraSentinel+ScreenshotSentinel+BTSentinel+FR-C3FlushSentinel+FR-BT3双通道+FR-C3风暴态+BT2风暴态+批量提权引擎+耗电治理V2+通知推送+死亡间隙修复+GC加速+内存余量预测+核亲和约束+RayNeo治理"
 
 flush_state=0
 flush_ts=0
@@ -502,8 +502,11 @@ while true; do
   if { [ "$psi_int" -ge 1500 ] || [ "$cpu_psi_int" -ge 2500 ]; } && [ "$is_boosting" -eq 0 ]; then
     is_boosting=1
 
-    # 1. 抓取前台焦点 App 包名
-    fg_pkg=$(dumpsys window 2>/dev/null | grep -E 'mCurrentFocus|mFocusedApp' \
+    # 1. 前台焦点 App 包名：v1.13.15 (A-4) 复用循环内每 10s 的 focused_pkg 采样结果，
+    #    不再单独 dumpsys window——该调用平时 ~40ms，高压时恶化到数百 ms，而护盾触发
+    #    恰在高压时刻（37h 内 821 次重复调用是纯浪费）。采样最多滞后 10s，可接受。
+    fg_pkg=$_cam_focus
+    [ -n "$fg_pkg" ] || fg_pkg=$(dumpsys window 2>/dev/null | grep -E 'mCurrentFocus|mFocusedApp' \
       | grep -Eo '[a-zA-Z0-9_.]+/[a-zA-Z0-9_.]+' | head -n 1 | cut -d/ -f1)
 
     sf_pid=$(pidof surfaceflinger)

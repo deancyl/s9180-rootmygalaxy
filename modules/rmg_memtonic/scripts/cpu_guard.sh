@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# cpu_guard.sh -- RMG MemTonic CPU 失常护栏 + 崩溃雷达（v1.13.14）
+# cpu_guard.sh -- RMG MemTonic CPU 失常护栏 + 崩溃雷达（v1.13.15）
 # v1.13.12 (FR-RN1 hardening): P0/P1 五缺陷修复——
 #   P0-1: rayneo_restore_all/dead-entry 清理逐条 Tgid 归属校验（/proc/<tid>/status 的
 #         Tgid 字段必须等于当前 RayNeo pid；注意 Tgid 不在 stat 文件中——stat 字段 5
@@ -739,7 +739,14 @@ while kill -0 "$PPID" 2>/dev/null; do
 
   t_scan0=$(now_ms)
   scan_cpu_rogue         # FR-4：扫描并处置 CPU 毒瘤（v1.9.8: delta-first 低开销）
-  logx S "act=cpu_scan done_ms=$(( $(now_ms) - t_scan0 ))"
+  # v1.13.15 (A-2): 扫描日志降频——慢扫描（≥300ms）立即记，正常扫描每 5 轮记一次。
+  # 原因：cpu_scan 原占日志 32%（1779/5583 行），把 512KB 历史窗口压到 37 小时。
+  # 保持 "done_ms=N" 结尾格式，兼容既有验收脚本的 sed 解析。
+  _scan_ms=$(( $(now_ms) - t_scan0 ))
+  _cs_n=$(( ${_cs_n:-0} + 1 ))
+  if [ "$_scan_ms" -ge 300 ] || [ $((_cs_n % 5)) -eq 1 ]; then
+    logx S "act=cpu_scan done_ms=$_scan_ms"
+  fi
 done
 
 # 守护进程已死：清场还原全部 CPU 降权

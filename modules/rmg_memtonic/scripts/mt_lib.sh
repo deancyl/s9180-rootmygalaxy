@@ -39,7 +39,7 @@ MODDIR="${SCRIPT_DIR%/*}"
 RUN=$MODDIR/run          # 运行时私有目录（root 700）
 LOG=$RUN/memtonic.log    # 审计日志（超 512KB 字节基准截断，v1.13.0: 256KB→512KB 保住更长取证窗口）
 MODULE_PROP=$MODDIR/module.prop  # v1.11.0: 模块声明文件（卡片描述动态统计的写入目标）
-MT_VERSION=v1.13.14              # v1.13.13: 模块版本（与 module.prop 同步，动态描述引用）
+MT_VERSION=v1.13.15              # v1.13.13: 模块版本（与 module.prop 同步，动态描述引用）
 
 # v1.13.6 (F2): notify_alert <类型> <文本> —— 关键告警推送 Android 通知。
 # 通道实测（10-29 16:00）：root shell `cmd notification post` exit=0 可达用户 0。
@@ -600,9 +600,33 @@ ss_heap_probe() {
   echo "$_java_heap" >> "$SS_HEAP_HIST" 2>/dev/null
   tail -n 6 "$SS_HEAP_HIST" > "$SS_HEAP_HIST.t" 2>/dev/null && mv "$SS_HEAP_HIST.t" "$SS_HEAP_HIST" 2>/dev/null
   if [ "$_java_heap" -ge "$SS_HEAP_WARN_KB" ]; then
-    _ssbb="$RUN/ssheap-$(date '+%Y%m%d_%H%M%S').log"
-    { echo "# MemTonic ssheap _trigger=$_trig _ts=$(date '+%m-%d %H:%M:%S')"; head -n 120 "$_tmpf"; } > "$_ssbb"
-    logx A "act=ss_heap_probe trigger=$_trig java_heap_kb=$_java_heap path=$(basename "$_ssbb")"
+    # v1.13.15 A-3: 快照限流——非危机态每小时最多 1 个，危机态不受限
+    _snap_ok=1
+    if [ "$_java_heap" -lt "$SS_SNAP_CRISIS_KB" ]; then
+      _snow=$(date +%s)
+      _st=0
+      [ -r "$SS_SNAP_TS" ] && IFS= read -r _st < "$SS_SNAP_TS" 2>/dev/null
+      case "$_st" in ''|*[!0-9]*) _st=0;; esac
+      [ $((_snow - _st)) -ge "$SS_SNAP_COOL" ] || _snap_ok=0
+    fi
+    if [ "$_snap_ok" = "1" ]; then
+      _ssbb="$RUN/ssheap-$(date '+%Y%m%d_%H%M%S').log"
+      { echo "# MemTonic ssheap _trigger=$_trig _ts=$(date '+%m-%d %H:%M:%S')"; head -n 120 "$_tmpf"; } > "$_ssbb"
+      date +%s > "$SS_SNAP_TS" 2>/dev/null
+      logx A "act=ss_heap_probe trigger=$_trig java_heap_kb=$_java_heap path=$(basename "$_ssbb")"
+      # 每天最多清理一次 7 天前快照（危机现场 7 天内必留）
+      _cl=0
+      [ -r "$SS_SNAP_CLEAN_TS" ] && IFS= read -r _cl < "$SS_SNAP_CLEAN_TS" 2>/dev/null
+      case "$_cl" in ''|*[!0-9]*) _cl=0;; esac
+      if [ $(( $(date +%s) - _cl )) -ge 86400 ]; then
+        find "$RUN" -maxdepth 1 -name 'ssheap-*.log' -mtime +7 -delete 2>/dev/null
+        date +%s > "$SS_SNAP_CLEAN_TS" 2>/dev/null
+        logx S "act=ss_snap_cleanup msg=已清理7天前堆快照"
+      fi
+    else
+      _sn=$(( ${_sn:-0} + 1 ))
+      [ $((_sn % 20)) -eq 1 ] && logx S "act=ss_snap_skip java_heap_kb=$_java_heap msg=非危机态限流每小时1个"
+    fi
   fi
   rm -f "$_tmpf"
   return 0
@@ -648,6 +672,17 @@ SS_DC_TS=$RUN/drop_caches.ts   # v1.13.14: drop_caches 冷却戳
 SS_DC_HIST=$RUN/drop_caches.hist # v1.13.14: drop_caches 1h 计数历史
 SS_DC_COOL=600                # 10 分钟最多 1 次
 SS_DC_HOUR_MAX=6              # 1 小时最多 6 次
+# v1.13.15 A-1: 堆探测条件化——dumpsys meminfo 是唯一的 9s 级尖峰源
+# （近 37h 日志里 14 次 >1000ms 的扫描尖峰全部紧邻 probe，最高 9220ms）。
+# 定期到点但内存无显著变化时跳过，把 98 次/天 降到 10–20 次。
+SS_PROBE_SKIP_KB=30720        # RSS 变化阈值 30MB
+SS_LAST_RSS=$RUN/ss_probe_rss.kb
+# v1.13.15 A-3: 堆快照限流——实测 275 个/天（设计 144），628 个 inode。
+# 非危机态每小时最多 1 个；危机态（≥470MB）不受限，保证 OOM 现场不丢；自动清 7 天前。
+SS_SNAP_COOL=3600
+SS_SNAP_CRISIS_KB=481280      # 470MB
+SS_SNAP_TS=$RUN/ssheap_snap.ts
+SS_SNAP_CLEAN_TS=$RUN/ssheap_clean.ts
 SS_ADVICE_FLAG=$RUN/soft_reboot_advised.flag  # v1.13.0: trim 两次无效→WebUI 建议横幅标记
 # v1.13.0: FR-SS 升级链状态（cpu_guard 进程内存态；重启后自然复位，无跨会话语义）
 SS_TRIM_PRE_KB=0
@@ -797,8 +832,33 @@ ss_health_probe() {
   _extreme=0
   if [ -f "$RUN/reboot_suppressed.flag" ]; then _extreme=1; _every=$SS_PROBE_EVERY_EXTREME; fi
   if [ $((_now - _pt)) -ge "$_every" ]; then
-    echo "$_now" > "$SS_PROBE_TS" 2>/dev/null
-    _need_probe=1
+    # v1.13.15 A-1: 到点后先判断"是否值得 dumpsys"——RSS 变化 <30MB 且 mem PSI <5%
+    # 且非抑制态/非复测期 → 跳过本次探测（保留轻量 RSS 观测），把 98 次/天降到 10–20 次。
+    # dumpsys meminfo 在高水位上本身会强迫 system_server 重分配（代码早有此注记）。
+    _worth=1
+    if [ "$_extreme" != "1" ] && [ "$SS_RECHECK_DUE" -eq 0 ]; then
+      _lr=0
+      [ -r "$SS_LAST_RSS" ] && IFS= read -r _lr < "$SS_LAST_RSS" 2>/dev/null
+      case "$_lr" in ''|*[!0-9]*) _lr=0;; esac
+      _dr=$((_rss - _lr)); [ "$_dr" -lt 0 ] && _dr=$((-_dr))
+      _hp=0
+      if [ -r /proc/pressure/memory ]; then
+        IFS= read -r _pl < /proc/pressure/memory 2>/dev/null
+        case "$_pl" in
+          *avg10=*) _pv=${_pl#*avg10=}; _pv=${_pv%% *}; _pi=${_pv%%.*}
+                    case "$_pi" in ''|*[!0-9]*) _pi=0;; esac
+                    [ "$_pi" -ge 5 ] && _hp=1 ;;
+        esac
+      fi
+      if [ "$_lr" -gt 0 ] && [ "$_dr" -lt "$SS_PROBE_SKIP_KB" ] && [ "$_hp" -eq 0 ]; then _worth=0; fi
+    fi
+    if [ "$_worth" = "1" ]; then
+      echo "$_now" > "$SS_PROBE_TS" 2>/dev/null
+      _need_probe=1
+    else
+      _skp=$(( ${_skp:-0} + 1 ))
+      [ $((_skp % 20)) -eq 1 ] && logx S "act=ss_probe_skip rss_kb=$_rss drss_kb=$_dr psi_ge5=$_hp msg=内存无显著变化_跳过dumpsys"
+    fi
   fi
   # v1.13.0: trim 后 SS_TRIM_RECHECK 秒强制复测（不受常规节奏限制）
   if [ "$SS_RECHECK_DUE" -gt 0 ] && [ "$_now" -ge "$SS_RECHECK_DUE" ]; then
@@ -841,6 +901,8 @@ ss_health_probe() {
 
   [ "$_need_probe" -eq 1 ] || return 0
   ss_heap_probe "system_server_pressure"
+  # v1.13.15 A-1: 记录本次探测时的 RSS，供下次"是否值得探测"判断（零 fork 写入）
+  echo "$_rss" > "$SS_LAST_RSS" 2>/dev/null
 
   # v1.12.9: FR-SS 双水位判定（基于本次探测写入的 SS_HEAP_KB_FILE）
   _hk=$(cat "$SS_HEAP_KB_FILE" 2>/dev/null); case "$_hk" in ''|*[!0-9]*) return 0;; esac
