@@ -2,6 +2,27 @@
 
 ---
 
+## [v1.13.14] - 2026-11-07
+
+> 源自 11-07 23:03:25 第四起 `system_server_crash`：`OutOfMemoryError: HeapFull, 501MB was used` @ `Watchdog`（与 10-22 / 10-25 / 11-05 三起同型 496–501MB）。当日取证的关键事实：`ss_heap_relief` 尝试 22 次**全部失败**、`ss_heap_trim` **全天 0 次成功**——唯一泄压手段 `am send-trim-memory` 走 binder 到 system_server，在堆濒死时必然不可达；模块实际上只具备「记录 + 建议」，不具备「有效干预」。
+
+### 修复（六项，全部在安全底线内）
+
+- **内核路径兜底 `ss_drop_caches`**：`am` 全部尝试失败后，改走 `echo 3 > /proc/sys/vm/drop_caches`（不经过 framework，确定可达）。作用域为 page cache / dentry / inode 等可回收 slab，**不触碰 Java 堆、不动 zram、不改持久内核参数**；限流 10 分钟 1 次、1 小时最多 6 次。
+- **`am` 单轮重试 ×3**：立即 / +4s / +8s（总阻塞 ≤8s），抓 framework 短暂可用窗口；失败必走内核兜底。复测间隔 120s→30s。
+- **阈值前移**：450MB 完整泄压链（原 460）、460MB GC 加速（原 480）、470MB 告警（原 485）、480MB 极限压制（新增）、430MB 预备态（新增，仅加密探测不动手）；496MB 仅作 OOM 参考线。11-07 实测堆在 450–480MB 震荡近 50 分钟才崩溃，前移换取 30–60 分钟有效窗口。
+- **GC 加速加强**：目标 nice -10 → **-15**，并尝试 `taskset` 绑大核（SM-S9180 cpu5-7，mask `e0`，失败静默降级为仅提权）；还原时 delta 法 renice + `taskset -p ff` 恢复亲和。GEMINI 铁律不变：已 ≤-15 不反向降级。
+- **趋势判定替代瞬时判定**：`ss_heap_recovered` 由「单点 <450MB 即撤销」改为「连续 3 次探测均 <430MB 才撤销」。11-07 实测 450MB 撤销后 6 分钟反弹到 477MB，建议反复失效；新逻辑另落 `act=ss_heap_holding` 便于观察。
+- **抑制态转极限压制**：检测到 `reboot_suppressed.flag`（有 staged rollback、不能重启）时，探测节奏加密到 **60s**，且每轮把 am 重试 + drop_caches + GC 提权全叠加，落 `ss_heap_extreme.flag`。11-07 取证显示 22:59 抑制建议后模块 4 分钟内再无任何动作，随后 OOM。
+- **零 fork 补全**：`gc_boost_on` 的 comm 读取改为 `IFS= read -r`（原 `cat` 子进程，与 P2-A 同源问题）。
+
+### 兼容性 / 底线
+
+- `collect_stats` 字段与段数不变；旁路 flag / RN_STATE 格式不变；`ss_heap_probe` 快照格式不变（新增 `ss_heap.hist` 趋势文件，可选消费）。
+- 底线不变：不杀进程 / 不冻结 / 不动 zram / 不持久修改内核参数 / 不刷写任何分区 / 软重启仍只建议不代执行 / nice≤-15 不反向降级 / 前台与相机优先 / 蓝牙与播放中应用不干预。
+- **诚实边界**：堆泄漏发生在 system_server 内部，用户态手段只能延后与缓解，不能承诺不再发生；本次改造把「几乎无干预」变为「有 30–60 分钟窗口 + 一条可达泄压路径」。
+- 本次部署需**一次守护重启**（stop + service.sh 幂等拉起）以加载新 `mt_lib.sh`。
+
 ## [WebUI UI-R1 / UI-R2 修订] - 2026-11-07
 
 > 本轮**仅重写 `webroot/index.html` 一个文件**（KernelSU WebUI），模块版本仍为 `v1.13.13 / vc53`，无脚本、阈值、旁路 flag 或守护变更；设备侧为单文件热替换、零守护重启。源自 11-06 用户截图反馈「WebUI 有大问题」，以及 11-07 追加的状态行排版与全站用语傻瓜化要求。

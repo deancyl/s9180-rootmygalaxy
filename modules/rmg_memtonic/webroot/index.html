@@ -87,7 +87,8 @@
   .mval{font-size:21px;font-weight:700;line-height:1.35;margin-top:2px}
   .msub{font-size:12px;color:var(--tx3);margin-top:3px;line-height:1.5}
   .quick{margin-bottom:10px}
-  .quick button{width:100%}
+  /* UI-R3 修复：必须用子选择器，否则 width:100% 会误伤里面的圆形 ⓘ 按钮（特异性高于 .ib） */
+  .quick>button{width:100%}
   .fold{background:var(--card);border:1px solid var(--line);border-radius:10px;margin-bottom:10px;overflow:hidden}
   .fold>summary{list-style:none;cursor:pointer;padding:12px 14px;font-size:13px;font-weight:600;color:var(--tx2);display:flex;align-items:center;justify-content:space-between;min-height:44px}
   .fold>summary::-webkit-details-marker{display:none}
@@ -106,7 +107,7 @@
   .snaprow:last-child{border-bottom:none}
   .snaprow span:last-child{overflow-wrap:anywhere}
   .empty{font-size:12px;color:var(--tx3);padding:6px 0}
-  .advbtns button{min-height:40px;font-size:12.5px}
+  .advbtns .oprow>button{min-height:40px;font-size:12.5px}
   /* UI-R2: 状态胶囊 + ⓘ 信息弹层 */
   .chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 6px}
   .chip{display:inline-flex;align-items:center;gap:5px;background:var(--card);border:1px solid var(--line);border-radius:999px;padding:5px 9px;font-size:12px;color:var(--tx2);line-height:1.2}
@@ -121,7 +122,7 @@
   .foldhint{font-size:12px;color:var(--tx3);margin:0 0 8px;line-height:1.5}
   .oprow{margin-bottom:10px}
   .opdesc{font-size:12px;color:var(--tx2);margin-bottom:6px;line-height:1.5}
-  .oprow button{width:100%}
+  .oprow>button{width:100%}
 </style>
 </head>
 <body>
@@ -167,12 +168,12 @@
     <div class="mval mono" id="st_heap">--</div>
     <div class="heapbar">
       <i id="heap_bar" style="width:0%;background:var(--ok)"></i>
+      <span class="tick" style="left:90.7%"></span>
       <span class="tick" style="left:92.7%"></span>
-      <span class="tick" style="left:96.8%"></span>
-      <span class="tick" style="left:97.8%"></span>
+      <span class="tick" style="left:94.8%"></span>
     </div>
     <div class="ticks" style="height:auto;display:flex;justify-content:space-between;font-size:10px;margin-top:6px">
-      <span>0</span><span style="color:var(--warn)">460 清理</span><span style="color:#fb923c">480 加速</span><span style="color:var(--err)">485 告警</span><span style="color:var(--err)">496 危险</span>
+      <span>0</span><span style="color:var(--warn)">450 清理</span><span style="color:#fb923c">460 加速</span><span style="color:var(--err)">470 告警</span><span style="color:var(--err)">496 危险</span>
     </div>
     <div class="msub" id="st_heap_band">--</div>
   </div>
@@ -236,7 +237,7 @@
   <div class="foldbody advbtns">
     <div class="foldhint">下面三个都会改变保护状态，点之前先看说明 <button type="button" class="ib" data-info="ops">i</button></div>
     <div class="oprow">
-      <div class="opdesc">保护没在跑时，用它开启并做一次内存整理 <button type="button" class="ib" data-info="btn-start">i</button></div>
+      <div class="opdesc" id="start_desc">保护没在跑时，用它开启并做一次内存整理 <button type="button" class="ib" data-info="btn-start">i</button></div>
       <button class="accent wide" data-act="start">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
         开启保护
@@ -480,9 +481,9 @@
     var n = parseInt(kb,10);
     return (isNaN(n) || n <= 0) ? null : Math.round(n/1024);
   }
-  // 阈值取自 mt_lib.sh 当前常量（未实施的 430MB 前移不画入）：
-  // SS_TRIM_KB=471040 / GC≈491520 / SS_ALERT_KB=496640 / OOM≈507904
-  var HEAP_TRIM=471040, HEAP_GC=491520, HEAP_ALERT=496640, HEAP_OOM=507904;
+  // 阈值取自 mt_lib.sh 当前常量（v1.13.14 前移后）：
+  // SS_TRIM_KB=460800(450MB) / SS_GC_KB=471040(460MB) / SS_ALERT_KB=481280(470MB) / OOM≈507904(496MB)
+  var HEAP_TRIM=460800, HEAP_GC=471040, HEAP_ALERT=481280, HEAP_OOM=507904;
   function heapBand(kb){
     var n = parseInt(kb,10);
     if (isNaN(n) || n <= 0) return {key:'na', label:'无数据', color:'var(--tx2)', pct:0};
@@ -573,6 +574,32 @@
     return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
       .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
+  // UI-R3: flag 段解析——剥离数据源追加的 _mtime= 行，并算出"多久以前"。
+  // 背景：boot_context.flag 自 11-06 起一直存在，旧实现「存在即告警」导致历史
+  // 提示永久占据首屏，与设备当前状态无关。
+  function parseFlag(seg){
+    var s = String(seg == null ? '' : seg);
+    var m = /_mtime=(\d+)/.exec(s);
+    var age = -1;
+    if (m){
+      var ts = parseInt(m[1], 10);
+      if (ts > 0) age = Math.max(0, Math.round(Date.now()/1000) - ts);
+      s = s.replace(/_mtime=\d+\s*/g, '');
+    }
+    return {body: s.trim(), age: age};
+  }
+  function agoText(age){
+    if (age === undefined || age === null || age < 0) return '时间未知';
+    if (age < 120) return '刚刚';
+    if (age < 3600) return Math.round(age/60) + ' 分钟前';
+    if (age < 86400) return Math.round(age/3600) + ' 小时前';
+    return Math.round(age/86400) + ' 天前';
+  }
+  // 无 mtime（老数据/读取失败）时保守显示，避免把真实告警吞掉
+  function isFresh(age, maxSec){
+    if (age === undefined || age === null || age < 0) return true;
+    return age <= maxSec;
+  }
   /* @pure-functions-end */
 
   function renderStatus(kv){
@@ -581,6 +608,12 @@
     setDisabled(busy);
     var sbStart = document.querySelector('button[data-act="start"]');
     if (sbStart) sbStart.title = running ? '守护已在运行（pid ' + (kv.pid || '?') + '），无需重复启动' : '';
+    // UI-R3: 禁用状态必须写明原因，否则用户会以为按钮"坏了"
+    var sdEl = document.getElementById('start_desc');
+    if (sdEl) sdEl.innerHTML = (running
+      ? '保护正在运行，这个按钮已禁用（无需重复开启） '
+      : '保护没在跑时，用它开启并做一次内存整理 ')
+      + '<button type="button" class="ib" data-info="btn-start">i</button>';
     var stEl = document.getElementById('st_state');
     if (running) stEl.setAttribute('data-pid', kv.pid || '?'); else stEl.removeAttribute('data-pid');
     stEl.innerHTML = running
@@ -631,21 +664,26 @@
       + '<div class="adesc">' + a.desc + '</div>'
       + (a.action ? '<div class="aaction">→ ' + a.action + '</div>' : '') + '</div>';
   }
-  function renderAlerts(alerts){
+  function renderAlerts(alerts, stale){
     var box = document.getElementById('advise'), rawbox = document.getElementById('advise_txt');
-    if (!alerts.length){ box.style.display = 'none'; rawbox.style.display = 'none'; return; }
-    var order = {critical:0, warn:1, info:2};
-    alerts.sort(function(a,b){ return order[a.level] - order[b.level]; });
-    var h = '', i;
-    for (i=0;i<Math.min(2,alerts.length);i++) h += alertHtml(alerts[i]);
-    if (alerts.length > 2){
-      h += '<details class="more"><summary>还有 ' + (alerts.length-2) + ' 条告警</summary>';
-      for (i=2;i<alerts.length;i++) h += alertHtml(alerts[i]);
-      h += '</details>';
-    }
-    box.innerHTML = h; box.style.display = '';
-    var raws = [];
+    var raws = [], i;
     for (i=0;i<alerts.length;i++) if (alerts[i].raw) raws.push(alerts[i].title + '：' + alerts[i].raw);
+    // UI-R3: 超过 24h 的历史 flag 不占告警位，但仍保留在「技术细节」里可查
+    if (stale && stale.length) raws = raws.concat(stale);
+    if (!alerts.length){
+      box.style.display = 'none';
+    } else {
+      var order = {critical:0, warn:1, info:2};
+      alerts.sort(function(a,b){ return order[a.level] - order[b.level]; });
+      var h = '';
+      for (i=0;i<Math.min(2,alerts.length);i++) h += alertHtml(alerts[i]);
+      if (alerts.length > 2){
+        h += '<details class="more"><summary>还有 ' + (alerts.length-2) + ' 条告警</summary>';
+        for (i=2;i<alerts.length;i++) h += alertHtml(alerts[i]);
+        h += '</details>';
+      }
+      box.innerHTML = h; box.style.display = '';
+    }
     if (raws.length){
       rawbox.innerHTML = '<details class="raw"><summary>查看原始诊断数据（' + raws.length + ' 条）</summary><pre>'
         + escapeHtml(raws.join('\n')) + '</pre></details>';
@@ -706,7 +744,10 @@
         + 'tr -d "\\n" < "$j" 2>/dev/null | grep -q state.:.enabling && _rbn=$((_rbn+1)); done; echo rb_enabling=$_rbn; '
         + 'echo hal_total=$(ls -1 /data/system/dropbox/SYSTEM_TOMBSTONE*.txt.gz 2>/dev/null | grep -c .); '
         + 'echo hal_latest=$(ls -t /data/system/dropbox/SYSTEM_TOMBSTONE*.txt.gz 2>/dev/null | head -1 | sed "s|.*/||")';
-      var snapCmd = 'ls -t ' + BASE + '/run/blackbox-*.log 2>/dev/null | head -5; echo ---; for f in $(ls -t ' + BASE + '/run/incident-*.log 2>/dev/null | head -5); do echo "${f##*/} | $(head -n 1 $f 2>/dev/null)"; done; echo ---; cat ' + BASE + '/run/soft_reboot_advised.flag 2>/dev/null; echo ---; cat ' + BASE + '/run/boot_context.flag 2>/dev/null; echo ---; cat ' + BASE + '/run/rollback_warn.flag 2>/dev/null; echo ---; cat ' + BASE + '/run/paging_storm.flag 2>/dev/null; echo ---; cat ' + BASE + '/run/rss_warn.flag 2>/dev/null; echo ---; cat ' + BASE + '/run/reboot_suppressed.flag 2>/dev/null';
+      // UI-R3: 每个 flag 附带 mtime（stat -c %Y），前端据此判断时效——11-06 的
+      // boot_context.flag 一直存在，旧实现「存在即告警」会让历史提示永久挂在首屏。
+      var snapCmd = 'ls -t ' + BASE + '/run/blackbox-*.log 2>/dev/null | head -5; echo ---; for f in $(ls -t ' + BASE + '/run/incident-*.log 2>/dev/null | head -5); do echo "${f##*/} | $(head -n 1 $f 2>/dev/null)"; done; '
+        + 'for _nf in soft_reboot_advised boot_context rollback_warn paging_storm rss_warn reboot_suppressed; do echo ---; _f=' + BASE + '/run/$_nf.flag; [ -f "$_f" ] && { cat "$_f"; echo; echo "_mtime=$(stat -c %Y "$_f" 2>/dev/null)"; }; done';
       var r2 = await execCmd(snapCmd + stateCmd, 15000);
       var parts = (r2.stdout || '').split('---');
       // P2 审查修复：第二次 exec 失败/分段异常不再静默降级（原实现会让状态区显示 -- 却无任何提示）
@@ -717,12 +758,15 @@
       }
       renderSnap('bb', parts[0]);
       renderSnap('inc', parts[1]);
-      var adv = (parts[2] || '').trim();
-      var bootc = (parts[3] || '').trim();
-      var rollw = (parts[4] || '').trim();
-      var pagestrm = (parts[5] || '').trim();
-      var rsswarn = (parts[6] || '').trim();
-      var suppr = (parts[7] || '').trim();
+      // UI-R3: flag 带 mtime —— 解析出内容与"多久以前"，用于时效判定
+      var _fa = parseFlag(parts[2]), _fb = parseFlag(parts[3]), _fr = parseFlag(parts[4]);
+      var _fp = parseFlag(parts[5]), _fs = parseFlag(parts[6]), _fu = parseFlag(parts[7]);
+      var adv = _fa.body, advAge = _fa.age;
+      var bootc = _fb.body, bootAge = _fb.age;
+      var rollw = _fr.body, rollAge = _fr.age;
+      var pagestrm = _fp.body, pageAge = _fp.age;
+      var rsswarn = _fs.body, rssAge = _fs.age;
+      var suppr = _fu.body, supprAge = _fu.age;
       var st = parseKv(parts[8] || '');
       var cr = parseKv(parts[9] || '');
       var rb = parseKv(parts[10] || '');
@@ -756,28 +800,38 @@
       set('st_probe_paging', fc.probePaging);
       document.getElementById('ver').textContent = 'RMG MemTonic ' + (st.ver || '') + ' · 少卡顿、少崩溃，只调优先级不动数据';
       // UI-R1: 告警结构化——每条独立卡片，原始 key=value 不再直出；UI-R2 主文案白话、术语进 ⓘ
-      var alerts = [];
-      if (adv) {
+      // UI-R3: 按 mtime 判时效——超过 24h 的历史提示降级进「技术细节」，不再占首屏告警位
+      var STALE_SEC = 86400;
+      var alerts = [], staleRaws = [];
+      var _stale = function(label, body, age){
+        if (body && !isFresh(age, STALE_SEC)) staleRaws.push(label + '（' + agoText(age) + '，已过期）：' + body);
+      };
+      if (adv && isFresh(advAge, STALE_SEC)) {
         var at = adviseText(adv);          // P1-3: 按 flag 的 reason= 给出对应解释
         alerts.push({level:'warn', icon:'⚠', title:'建议由你手动重启一次',
-          desc:'系统两次清理内存都没降下来，像是有真泄漏。',
+          desc:'（' + agoText(advAge) + '）系统两次清理内存都没降下来，像是有真泄漏。',
           action:'先看下面「禁止重启」，再自己决定', info:'alert-reboot', raw:adv});
-      }
+      } else _stale('软重启建议', adv, advAge);
       if (int0(st.ex_rejected) > 0) alerts.push({level:'info', icon:'ℹ', title:'重复开启被拦下 ' + st.ex_rejected + ' 次',
         desc:'已经在运行了，不用管。', action:'', info:'alert-startrejected', raw:''});
       if (int0(st.ex_rootlost) > 0) alerts.push({level:'critical', icon:'⛔', title:'临时权限断开过 ' + st.ex_rootlost + ' 次',
         desc:'临时 root 可能已失效，请检查 KSU 会话。', action:'重新获取临时权限', info:'alert-rootlost', raw:''});
-      if (bootc) alerts.push({level:'info', icon:'ℹ', title:'上次不是正常关机',
-        desc:'系统救助计数有变化，建议确认是谁触发的。', action:'核对一下重启原因', info:'alert-boot', raw:bootc});
-      if (rollw) alerts.push({level:'critical', icon:'⛔', title:'系统正在回滚更新',
-        desc:'完整重启可能已经发生，临时权限会丢失。', action:'去确认回滚状态', info:'alert-rollback', raw:rollw});
-      if (pagestrm) alerts.push({level:'warn', icon:'🌀', title:'内存很吃紧',
-        desc:'正在频繁换页，容易卡顿。', action:'关掉占内存的大应用', info:'alert-paging', raw:pagestrm});
-      if (rsswarn) alerts.push({level:'info', icon:'📊', title:'系统占用持续上涨',
-        desc:'这块内存不受清理机制管，先观察。', action:'暂时不用处理', info:'alert-rss', raw:rsswarn});
-      if (suppr) alerts.push({level:'warn', icon:'🔒', title:'重启建议已被按住',
-        desc:'有未完成的更新回滚，现在重启可能丢失临时权限。', action:'先确认回滚状态', info:'alert-suppressed', raw:suppr});
-      renderAlerts(alerts);
+      if (bootc && isFresh(bootAge, STALE_SEC)) alerts.push({level:'info', icon:'ℹ', title:'上次不是正常关机',
+        desc:'（' + agoText(bootAge) + '）系统救助计数有变化，建议确认是谁触发的。', action:'核对一下重启原因', info:'alert-boot', raw:bootc});
+      else _stale('开机善后', bootc, bootAge);
+      if (rollw && isFresh(rollAge, STALE_SEC)) alerts.push({level:'critical', icon:'⛔', title:'系统正在回滚更新',
+        desc:'（' + agoText(rollAge) + '）完整重启可能已经发生，临时权限会丢失。', action:'去确认回滚状态', info:'alert-rollback', raw:rollw});
+      else _stale('回滚征兆', rollw, rollAge);
+      if (pagestrm && isFresh(pageAge, STALE_SEC)) alerts.push({level:'warn', icon:'🌀', title:'内存很吃紧',
+        desc:'（' + agoText(pageAge) + '）正在频繁换页，容易卡顿。', action:'关掉占内存的大应用', info:'alert-paging', raw:pagestrm});
+      else _stale('换页风暴', pagestrm, pageAge);
+      if (rsswarn && isFresh(rssAge, STALE_SEC)) alerts.push({level:'info', icon:'📊', title:'系统占用持续上涨',
+        desc:'（' + agoText(rssAge) + '）这块内存不受清理机制管，先观察。', action:'暂时不用处理', info:'alert-rss', raw:rsswarn});
+      else _stale('RSS 膨胀', rsswarn, rssAge);
+      if (suppr && isFresh(supprAge, STALE_SEC)) alerts.push({level:'warn', icon:'🔒', title:'重启建议已被按住',
+        desc:'（' + agoText(supprAge) + '）有未完成的更新回滚，现在重启可能丢失临时权限。', action:'先确认回滚状态', info:'alert-suppressed', raw:suppr});
+      else _stale('重启抑制', suppr, supprAge);
+      renderAlerts(alerts, staleRaws);
     } catch(e){
       showErr('刷新异常：' + e);
     }
@@ -844,11 +898,23 @@
     }
   }
   document.addEventListener('click', function(ev){
-    if (ev.target && ev.target.id === 'imask'){ document.getElementById('imask').className = ''; return; }
+    var im = document.getElementById('imask');
+    // UI-R3: 弹层开着时，点弹层以外的任何位置都关闭。原实现只认遮罩元素本身，
+    // 一旦点偏/遮罩尺寸异常就会卡住，随后整页按钮都像"没反应"。
+    if (im && im.className === 'on'){
+      var n = ev.target, inDlg = false;
+      while (n && n !== document.body){ if (n.id === 'idlg'){ inDlg = true; break; } n = n.parentNode; }
+      var closing = ev.target && ev.target.getAttribute && ev.target.getAttribute('data-info-close');
+      if (!inDlg || closing){
+        im.className = '';
+        if (!inDlg && ev.preventDefault) ev.preventDefault();
+        return;
+      }
+    }
     var el = ev.target;
     while (el && el !== document.body){
       if (el.getAttribute && el.getAttribute('data-info-close')){
-        document.getElementById('imask').className = '';
+        im.className = '';
         return;
       }
       if (el.getAttribute && el.getAttribute('data-info')){

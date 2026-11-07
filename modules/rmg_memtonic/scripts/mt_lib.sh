@@ -39,7 +39,7 @@ MODDIR="${SCRIPT_DIR%/*}"
 RUN=$MODDIR/run          # 运行时私有目录（root 700）
 LOG=$RUN/memtonic.log    # 审计日志（超 512KB 字节基准截断，v1.13.0: 256KB→512KB 保住更长取证窗口）
 MODULE_PROP=$MODDIR/module.prop  # v1.11.0: 模块声明文件（卡片描述动态统计的写入目标）
-MT_VERSION=v1.13.13              # v1.13.13: 模块版本（与 module.prop 同步，动态描述引用）
+MT_VERSION=v1.13.14              # v1.13.13: 模块版本（与 module.prop 同步，动态描述引用）
 
 # v1.13.6 (F2): notify_alert <类型> <文本> —— 关键告警推送 Android 通知。
 # 通道实测（10-29 16:00）：root shell `cmd notification post` exit=0 可达用户 0。
@@ -596,6 +596,9 @@ ss_heap_probe() {
   _java_heap=$(awk '/Java Heap:/{for(i=1;i<=NF;i++)if($i~/^[0-9]+$/){print $i;exit}}' "$_tmpf")
   case "$_java_heap" in ''|*[!0-9]*) rm -f "$_tmpf"; return 0;; esac
   echo "$_java_heap" > "$SS_HEAP_KB_FILE" 2>/dev/null
+  # v1.13.14: 堆采样历史（趋势判定，保留最近 6 点；零 fork 追加）
+  echo "$_java_heap" >> "$SS_HEAP_HIST" 2>/dev/null
+  tail -n 6 "$SS_HEAP_HIST" > "$SS_HEAP_HIST.t" 2>/dev/null && mv "$SS_HEAP_HIST.t" "$SS_HEAP_HIST" 2>/dev/null
   if [ "$_java_heap" -ge "$SS_HEAP_WARN_KB" ]; then
     _ssbb="$RUN/ssheap-$(date '+%Y%m%d_%H%M%S').log"
     { echo "# MemTonic ssheap _trigger=$_trig _ts=$(date '+%m-%d %H:%M:%S')"; head -n 120 "$_tmpf"; } > "$_ssbb"
@@ -619,14 +622,32 @@ SS_HEAP_WARN_KB=400000
 SS_HEALTH_STATE=$RUN/ss_health.ts
 SS_PROBE_EVERY=1800
 SS_PROBE_EVERY_NIGHT=600      # v1.13.0: 深夜(00-06 CST)兜底探测间隔——两次 OOM 堆爬升尾段均 <6min
+SS_PROBE_EVERY_EXTREME=60     # v1.13.14: 抑制态(有 staged rollback 不能重启)极限压制探测间隔
 SS_PROBE_TS=$RUN/ss_probe.ts
-SS_TRIM_KB=471040
-SS_ALERT_KB=496640
+# v1.13.14 阈值前移（11-07 第四起 HeapFull 501MB 取证）：
+#   旧链 460 trim / 480 GC / 485 告警 三线全部被突破，且 am 在堆濒死时必然不可达
+#   （当日 ss_heap_trim 全天 0 次成功、relief 22 次全 fail）。前移 10-15MB 换取
+#   30-60 分钟有效窗口；同时新增内核路径兜底 ss_drop_caches（不经过 system_server）。
+SS_PREP_KB=440320             # 430MB 预备态：加密探测 + 趋势观察，不动手
+SS_TRIM_KB=460800             # 450MB 完整泄压链（原 460MB）
+SS_GC_KB=471040               # 460MB GC 加速（原 480MB）
+SS_GC_RELEASE_KB=450560       # 440MB GC 解除（原 450MB）
+SS_ALERT_KB=481280            # 470MB 告警（原 485MB）
+SS_EXTREME_KB=491520          # 480MB 极限压制：全手段叠加 + 每轮强制链
+SS_OOM_KB=507904              # 496MB OOM 参考线（仅日志口径）
 SS_TRIM_COOL=600
 SS_TRIM_RECHECK=300           # v1.13.0: trim 后强制复测间隔
-SS_TRIM_RETRY=120             # v1.13.4: 泄压失败（am 不可达）后的短退避复测间隔
+SS_TRIM_RETRY=30              # v1.13.14: 120→30，缩短复测间隔以抓 framework 短暂可用窗口
+SS_TRIM_TRIES=3               # v1.13.14: am 单轮最多尝试次数（立即 / +4s / +8s）
+SS_TRIM_TRY_GAP=4             # v1.13.14: 每次尝试间隔秒数（总阻塞 ≤8s）
+SS_TRIM_ATTEMPT_MIN=120       # v1.13.14: force 路径最小尝试间隔（防极限压制每轮阻塞）
 SS_HEAP_KB_FILE=$RUN/ss_heap.kb
+SS_HEAP_HIST=$RUN/ss_heap.hist # v1.13.14: 堆采样历史（趋势判定，保留最近 6 点）
 SS_TRIM_TS=$RUN/ss_trim.ts
+SS_DC_TS=$RUN/drop_caches.ts   # v1.13.14: drop_caches 冷却戳
+SS_DC_HIST=$RUN/drop_caches.hist # v1.13.14: drop_caches 1h 计数历史
+SS_DC_COOL=600                # 10 分钟最多 1 次
+SS_DC_HOUR_MAX=6              # 1 小时最多 6 次
 SS_ADVICE_FLAG=$RUN/soft_reboot_advised.flag  # v1.13.0: trim 两次无效→WebUI 建议横幅标记
 # v1.13.0: FR-SS 升级链状态（cpu_guard 进程内存态；重启后自然复位，无跨会话语义）
 SS_TRIM_PRE_KB=0
@@ -644,38 +665,65 @@ gc_boost_on() {
   _gss=$(pidof system_server 2>/dev/null); _gss=${_gss%% *}
   [ -n "$_gss" ] || return 0
   : > "$RUN/gc_boost.bak" 2>/dev/null
-  _gb_n=0
+  _gb_n=0; _gb_task=0
   for t in /proc/$_gss/task/*; do
-    _gc_comm=$(cat "$t/comm" 2>/dev/null)
+    # v1.13.14: 零 fork comm 读取（原 cat 子进程在换页风暴下成本暴涨，同 P2-A 范式）
+    IFS= read -r _gc_comm < "$t/comm" 2>/dev/null || continue
     case "$_gc_comm" in
       HeapTaskDaemon*|ReferenceQueue*|Finalizer*)
         tid=${t##*/}
         on=$(nice_of "$tid")
         case "$on" in ''|*[!0-9-]*) continue;; esac
-        [ "$on" -le -10 ] && continue
-        renice -n $((-10 - on)) -p "$tid" >/dev/null 2>&1 || continue
+        [ "$on" -le -15 ] && continue
+        renice -n $((-15 - on)) -p "$tid" >/dev/null 2>&1 || continue
+        # v1.13.14: 尝试绑大核（SM-S9180 cpu5-7 = mask 0xe0）；失败静默降级为仅提权
+        taskset -p e0 "$tid" >/dev/null 2>&1 && _gb_task=$((_gb_task+1))
         echo "$tid $on" >> "$RUN/gc_boost.bak" 2>/dev/null
         _gb_n=$((_gb_n+1))
         ;;
     esac
   done
-  logx A "act=gc_boost_on threads=$_gb_n nice=-10 msg=堆危机_GC守护线程提权_加速回收"
-  notify_alert gcboost "MemTonic: 堆危机——GC加速已介入（GC线程提权加速回收），持续至堆回落"
+  logx A "act=gc_boost_on threads=$_gb_n nice=-15 taskset=$_gb_task msg=堆危机_GC守护线程提权加绑大核_加速回收"
+  notify_alert gcboost "MemTonic: 堆危机——GC加速已介入（GC线程提权至 -15），持续至堆回落"
   return 0
 }
 gc_boost_off() {
   [ -s "$RUN/gc_boost.bak" ] || return 0
-  _goff_n=0
+  _goff_n=0; _goff_task=0
   while read -r tid orig; do
     case "$tid" in ''|*[!0-9]*) continue;; esac
     case "$orig" in ''|*[!0-9-]*) continue;; esac
     [ -d "/proc/$tid" ] || continue
     cur=$(nice_of "$tid"); case "$cur" in ''|*[!0-9-]*) continue;; esac
     renice -n $((orig - cur)) -p "$tid" >/dev/null 2>&1 && _goff_n=$((_goff_n+1))
+    # v1.13.14: 还原 CPU 亲和（system_server 的 GC 线程默认继承全核 mask ff）
+    taskset -p ff "$tid" >/dev/null 2>&1 && _goff_task=$((_goff_task+1))
   done < "$RUN/gc_boost.bak"
   rm -f "$RUN/gc_boost.bak" 2>/dev/null
-  logx A "act=gc_boost_off restored=$_goff_n msg=堆危机解除_GC线程优先级已无损还原"
+  logx A "act=gc_boost_off restored=$_goff_n affinity=$_goff_task msg=堆危机解除_GC线程优先级与亲和已无损还原"
   return 0
+}
+
+# v1.13.14: 内核路径兜底——am 走 binder 到 system_server，在堆濒死时必然不可达
+# （11-07 取证：relief 22 次全 fail、ss_heap_trim 全天 0 次）。drop_caches 写内核
+# 接口，不经过 framework，是唯一确定可达的回收路径。作用域：page cache / dentry /
+# inode 等可回收 slab，不触碰 Java 堆本身，也不动 zram。限流：10min/次、1h≤6 次。
+ss_drop_caches() {
+  _now=$(date +%s)
+  _dt=$(cat "$SS_DC_TS" 2>/dev/null); case "$_dt" in ''|*[!0-9]*) _dt=0;; esac
+  [ $((_now - _dt)) -ge "$SS_DC_COOL" ] || { logx S "act=ss_drop_caches skip=cooldown"; return 1; }
+  echo "$_now" >> "$SS_DC_HIST" 2>/dev/null
+  awk -v n="$_now" '$1 > n-3600' "$SS_DC_HIST" 2>/dev/null | tail -n 12 > "$SS_DC_HIST.t"
+  mv "$SS_DC_HIST.t" "$SS_DC_HIST" 2>/dev/null
+  _hc=$(awk 'END{print NR}' "$SS_DC_HIST" 2>/dev/null); case "$_hc" in ''|*[!0-9]*) _hc=0;; esac
+  [ "$_hc" -le "$SS_DC_HOUR_MAX" ] || { logx S "act=ss_drop_caches skip=hourly_cap=$_hc"; return 1; }
+  if echo 3 > /proc/sys/vm/drop_caches 2>/dev/null; then
+    echo "$_now" > "$SS_DC_TS" 2>/dev/null
+    logx A "act=ss_drop_caches result=ok hour_cnt=$_hc msg=am不可达_改走内核路径回收页缓存与可回收slab"
+    return 0
+  fi
+  logx W "act=ss_drop_caches result=fail msg=内核路径写入失败"
+  return 1
 }
 
 # v1.13.0: 第三参 force——升级链复测路径跳过 SS_TRIM_COOL（trim 弱杠杆但零成本，
@@ -684,27 +732,41 @@ ss_heap_relief() {
   _ss=$1; _hk=$2; _force=$3
   _now=$(date +%s)
   _lt=$(cat "$SS_TRIM_TS" 2>/dev/null); case "$_lt" in ''|*[!0-9]*) _lt=0;; esac
+  # v1.13.14: 统一最小尝试间隔——force（极限压制）每轮都会调用，若不限流会在 60s
+  # 循环里反复阻塞 8s；这里对成功/失败都计戳。
+  _att_ts=$RUN/ss_trim_attempt.ts
+  _at=$(cat "$_att_ts" 2>/dev/null); case "$_at" in ''|*[!0-9]*) _at=0;; esac
+  [ $((_now - _at)) -ge "$SS_TRIM_ATTEMPT_MIN" ] || return 0
+  echo "$_now" > "$_att_ts" 2>/dev/null
   if [ "$_force" != "force" ]; then
     [ $((_now - _lt)) -ge "$SS_TRIM_COOL" ] || return 0
   fi
   # v1.13.4 修复（W1，10-27 09:53 实证）：冷却戳仅在成功后写入——旧实现先写戳后调 am，
   # system_server 饱和期 am 不可达时失败照样消耗 600s 冷却，二次泄压被静默拦截，
-  # 直至崩溃期间堆失明。失败现改为：计 fail + 120s 短退避复测；ALERT 水位下失败
-  # （system_server 连 trim 都收不到）比 trim 弱效更严重，直接落 advice flag。
-  if am send-trim-memory "$_ss" RUNNING_CRITICAL >/dev/null 2>&1; then
+  # 直至崩溃期间堆失明。
+  # v1.13.14：单轮最多 SS_TRIM_TRIES 次尝试（立即 / +4s / +8s，总阻塞 ≤8s），抓
+  # framework 短暂可用窗口；全部失败则转内核路径 ss_drop_caches 兜底。
+  _ok=0; _try=1
+  while [ "$_try" -le "$SS_TRIM_TRIES" ]; do
+    if am send-trim-memory "$_ss" RUNNING_CRITICAL >/dev/null 2>&1; then _ok=1; break; fi
+    [ "$_try" -lt "$SS_TRIM_TRIES" ] && sleep "$SS_TRIM_TRY_GAP"
+    _try=$((_try + 1))
+  done
+  if [ "$_ok" = "1" ]; then
     echo "$_now" > "$SS_TRIM_TS" 2>/dev/null
     SS_TRIM_PRE_KB=$_hk
     SS_RECHECK_DUE=$((_now + SS_TRIM_RECHECK))
-    logx A "act=ss_heap_relief level=RUNNING_CRITICAL pid=$_ss java_heap_kb=$_hk recheck=${SS_TRIM_RECHECK}s msg=已请求泄压_实测效果有限_300s后复测"
+    logx A "act=ss_heap_relief level=RUNNING_CRITICAL pid=$_ss java_heap_kb=$_hk tries=$_try recheck=${SS_TRIM_RECHECK}s msg=已请求泄压_${SS_TRIM_RECHECK}s后复测"
   else
     SS_TRIM_FAILS=$((SS_TRIM_FAILS + 1))
     SS_TRIM_PRE_KB=$_hk
     SS_RECHECK_DUE=$((_now + SS_TRIM_RETRY))
-    logx W "act=ss_heap_relief result=fail pid=$_ss java_heap_kb=$_hk fails=$SS_TRIM_FAILS retry=${SS_TRIM_RETRY}s msg=am不可达_泄压未执行_冷却未消费_短退避后复测"
+    logx W "act=ss_heap_relief result=fail pid=$_ss java_heap_kb=$_hk fails=$SS_TRIM_FAILS tries=$SS_TRIM_TRIES retry=${SS_TRIM_RETRY}s msg=am不可达_转内核路径兜底"
+    ss_drop_caches
     if [ "$_hk" -ge "$SS_ALERT_KB" ] && [ ! -f "$SS_ADVICE_FLAG" ]; then
       echo "advised=$(date '+%m-%d %H:%M:%S') java_heap_kb=$_hk reason=relief_fail" > "$SS_ADVICE_FLAG" 2>/dev/null
       logx E "advise=soft_reboot reason=ss_relief_fail fails=$SS_TRIM_FAILS java_heap_kb=$_hk msg=泄压不可达且接近堆上限_建议尽快择机软重启"
-      notify_alert advise "MemTonic: system_server 泄压不可达且接近堆上限($_(( _hk / 1024 ))MB)——建议尽快择机软重启"
+      notify_alert advise "MemTonic: system_server 泄压不可达且接近堆上限（$(( _hk / 1024 ))MB）——建议尽快择机软重启"
       SS_TRIM_FAILS=0; SS_TRIM_PRE_KB=0; SS_RECHECK_DUE=0
     fi
   fi
@@ -730,6 +792,10 @@ ss_health_probe() {
   _every=$SS_PROBE_EVERY
   _hr=$(( ( _now / 3600 + 8 ) % 24 ))
   [ "$_hr" -le 6 ] && _every=$SS_PROBE_EVERY_NIGHT
+  # v1.13.14: 抑制态极限压制——有 staged rollback 不能重启时探测加密到 60s。
+  # 11-07 取证：22:59 抑制建议后模块 4 分钟内再无任何动作，随后 501MB OOM。
+  _extreme=0
+  if [ -f "$RUN/reboot_suppressed.flag" ]; then _extreme=1; _every=$SS_PROBE_EVERY_EXTREME; fi
   if [ $((_now - _pt)) -ge "$_every" ]; then
     echo "$_now" > "$SS_PROBE_TS" 2>/dev/null
     _need_probe=1
@@ -801,24 +867,45 @@ ss_health_probe() {
       SS_TRIM_FAILS=0
       SS_TRIM_PRE_KB=0
     fi
-  elif [ "$_hk" -lt "$SS_TRIM_KB" ]; then
-    if [ -f "$SS_ADVICE_FLAG" ]; then
-      # v1.13.6 (F1): 旗标属主保护——FR-SS 只清自己落的旗标（trim_ineffective/relief_fail）。
-      # paging_storm/memory_thrashing 等他方旗标由各自逻辑清除（此前无条件 rm 曾把换页
-      # 风暴的建议在 30 分钟内误删，用户横幅窗口随之消失）。
-      case "$(cat "$SS_ADVICE_FLAG" 2>/dev/null)" in
-        *reason=trim_ineffective*|*reason=relief_fail*)
-          rm -f "$SS_ADVICE_FLAG" 2>/dev/null
-          logx I "act=ss_heap_recovered java_heap_kb=$_hk msg=堆已回落_软重启建议已撤除"
-          ;;
-        *)
-          logx S "act=ss_heap_recovered java_heap_kb=$_hk note=advice_flag_owned_by_other_msg=属主保护_未动他方旗标"
-          ;;
-      esac
+  elif [ "$_hk" -lt "$SS_PREP_KB" ]; then
+    # v1.13.14: 趋势判定——连续 3 次探测均低于预备线（430MB）才认定回落并撤销建议。
+    # 旧实现单点 <450MB 即撤销；11-07 实测 450MB 撤销后 6 分钟反弹到 477MB，
+    # 建议反复失效、用户处置窗口被浪费。
+    _hc=$(awk 'END{print NR}' "$SS_HEAP_HIST" 2>/dev/null); case "$_hc" in ''|*[!0-9]*) _hc=0;; esac
+    _h2=$(awk 'END{print p} {p=$0}' "$SS_HEAP_HIST" 2>/dev/null)
+    _h3=$(awk 'END{print q} {q=p; p=$0}' "$SS_HEAP_HIST" 2>/dev/null)
+    case "$_h2" in ''|*[!0-9]*) _h2=$_hk;; esac
+    case "$_h3" in ''|*[!0-9]*) _h3=$_hk;; esac
+    if [ "$_hc" -ge 3 ] && [ "$_h2" -lt "$SS_PREP_KB" ] && [ "$_h3" -lt "$SS_PREP_KB" ]; then
+      if [ -f "$SS_ADVICE_FLAG" ]; then
+        # v1.13.6 (F1): 旗标属主保护——FR-SS 只清自己落的旗标（trim_ineffective/relief_fail）。
+        case "$(cat "$SS_ADVICE_FLAG" 2>/dev/null)" in
+          *reason=trim_ineffective*|*reason=relief_fail*)
+            rm -f "$SS_ADVICE_FLAG" 2>/dev/null
+            logx I "act=ss_heap_recovered java_heap_kb=$_hk samples=$_h3,$_h2,$_hk msg=连续3次低于预备线_软重启建议已撤除"
+            ;;
+          *)
+            logx S "act=ss_heap_recovered java_heap_kb=$_hk note=advice_flag_owned_by_other_msg=属主保护_未动他方旗标"
+            ;;
+        esac
+      fi
+      SS_TRIM_FAILS=0
+      SS_TRIM_PRE_KB=0
+      SS_RECHECK_DUE=0
+    else
+      logx S "act=ss_heap_holding java_heap_kb=$_hk samples=$_h3,$_h2,$_hk msg=低于泄压线但趋势未确认_暂不撤销建议"
     fi
-    SS_TRIM_FAILS=0
-    SS_TRIM_PRE_KB=0
-    SS_RECHECK_DUE=0
+  fi
+  # v1.13.14: 极限压制态——≥480MB，或处于抑制态（有 staged rollback 不能重启）且 ≥450MB。
+  # 全手段强制叠加：am 短重试 ×3 + 内核路径 drop_caches + GC 提权加绑核。
+  if [ "$_hk" -ge "$SS_EXTREME_KB" ] || { [ "$_extreme" = "1" ] && [ "$_hk" -ge "$SS_TRIM_KB" ]; }; then
+    [ -f "$RUN/ss_heap_extreme.flag" ] || echo "java_heap_kb=$_hk ts=$(date '+%m-%d %H:%M:%S')" > "$RUN/ss_heap_extreme.flag" 2>/dev/null
+    logx W "warn=ss_heap_extreme java_heap_kb=$_hk line=$SS_EXTREME_KB msg=进入极限压制_am重试加drop_caches加GC提权全叠加"
+    ss_heap_relief "$_ss" "$_hk" force
+    ss_drop_caches
+  elif [ -f "$RUN/ss_heap_extreme.flag" ] && [ "$_hk" -lt "$SS_TRIM_KB" ]; then
+    rm -f "$RUN/ss_heap_extreme.flag" 2>/dev/null
+    logx I "act=ss_heap_extreme_exit java_heap_kb=$_hk msg=退出极限压制_堆已低于泄压线"
   fi
   if [ "$_hk" -ge "$SS_ALERT_KB" ]; then
     logx W "warn=ss_heap_critical java_heap_kb=$_hk msg=接近堆上限_哨兵已自动降载_建议择机软重启"
@@ -826,12 +913,11 @@ ss_health_probe() {
   elif [ "$_hk" -ge "$SS_TRIM_KB" ]; then
     ss_heap_relief "$_ss" "$_hk"
   fi
-  # v1.13.8: GC 危机加速（前置干预）——堆 ≥480MB（距 495MB OOM 线 15MB）或泄压失败≥2
-  # 即介入：GC 守护线程提权，压制「CPU 饱和饿死 GC→堆满」死亡螺旋；堆 <450MB 解除。
-  # 状态机 arm/hold/disarm 由 cpu_guard 的 60s probe 循环持续评估（gc_state 进程内）。
-  if [ "$_hk" -ge 491520 ] || [ "$SS_TRIM_FAILS" -ge 2 ]; then
+  # v1.13.14: GC 加速触发线 480→460MB、解除线 450→440MB（随阈值前移同步下移）。
+  # 目标 nice -15 + 尝试绑大核；GEMINI 铁律：已 ≤-15 不反向降级，还原走 delta 法 + 亲和 ff。
+  if [ "$_hk" -ge "$SS_GC_KB" ] || [ "$SS_TRIM_FAILS" -ge 2 ]; then
     [ "$gc_state" -eq 0 ] && { gc_boost_on; gc_state=1; }
-  elif [ "$_hk" -lt 460800 ] && [ "$gc_state" -eq 1 ]; then
+  elif [ "$_hk" -lt "$SS_GC_RELEASE_KB" ] && [ "$gc_state" -eq 1 ]; then
     gc_boost_off
     gc_state=0
   fi
