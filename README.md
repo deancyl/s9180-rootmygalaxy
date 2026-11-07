@@ -25,7 +25,11 @@ MemTonic 是**配套本仓库临时 root 环境使用**的 KernelSU 模块：软
 
 | MemTonic | 说明 | 适用人群 |
 |---|---|---|
-| [`memtonic-v1.10.0`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.10.0) | **当前最新**：内存风暴三件套——mem PSI 60s 连续监测（内建 read 零 fork）、灾难黑匣子（连续 2 轮 some≥25 落盘 PSI/RSS+majflt Top10）、亮屏风暴级压实例外（psi≥30 唯一通道，常规亮屏禁压铁律不变）；kswapd>90s/h 顺手压实；前台 majflt 转码指纹预警 | **新装首选** |
+| [`v1.13.14`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.14) | **当前最新**：FR-SS 六项硬化——`am` 失败后走内核 `drop_caches` 兜底（限流 10min/次、1h≤6）、阈值前移 430/450/460/470/480MB、GC 提权 -15 + 绑大核、连续 3 点趋势判定、抑制态极限压制（60s 探测）；WebUI flag 时效化（24h 降级）+ ⓘ 弹层点外部关闭 + CSS 误伤修复（圆形 ⓘ 不再被拉成椭圆） | **新装首选** |
+| [`v1.13.13`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.13) | FR-RN1 零 fork 修复（`cpu_scan` 1770–13010ms → 210–220ms 的 A/B 铁证）、WebUI P2 四项、雷鸟语音链路削峰豁免（`act=voice_asr_skip`）；验收 0/5 后自动回滚旁路 flag | 需要 P2 联网诊断/语音链路治理者 |
+| [`v1.13.12`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.12) | FR-RN1 雷鸟治理五缺陷（Tgid 归属校验 / `oom_score_adj≤300` 判活 / 风暴期可达 / 双路径清场 / memo 门控）+ WebUI P0/P1 一致性 | 稳定保守选择 |
+| [`memtonic-v1.11.0`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.11.0) | 状态可视化：卡片动态统计 + WebUI 状态面板 | 历史存档 |
+| [`memtonic-v1.10.0`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.10.0) | 内存风暴三件套——mem PSI 60s 连续监测（内建 read 零 fork）、灾难黑匣子（连续 2 轮 some≥25 落盘 PSI/RSS+majflt Top10）、亮屏风暴级压实例外（psi≥30 唯一通道，常规亮屏禁压铁律不变）；kswapd>90s/h 顺手压实；前台 majflt 转码指纹预警 | 历史存档 |
 | [`memtonic-v1.9.12`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.12) | Rollback 地雷自动排除哨兵（防软重启被升级为完整重启而丢 root）、sspid 门闩重置、启动环境基线、7 脚本全量 ARG_MAX 审计修复 | 稳定保守选择 |
 | [`memtonic-v1.9.6`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.6) | 修复 uninstall 盲杀防变砖、`alive()` 逻辑、vk_injector 多 PID bug | 需要 v1.9.1~1.9.5 网络救援特性者 |
 | [`memtonic-v1.9.5`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.5) | 护盾日志版本号与各脚本版本声明同步；CPU 护栏死线程清理的内存泄漏修复 | 同上 |
@@ -36,7 +40,7 @@ MemTonic 是**配套本仓库临时 root 环境使用**的 KernelSU 模块：软
 | [`memtonic-v1.4.3`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.4.3) | renice 口径显式化（线程级 tid 计数 + 打击面明细快照），纯观测增强 | 仅需启动风暴护栏 |
 | [`memtonic-v1.3.0`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.3.0) | 早期版本：启动风暴护栏 + 息屏内存压实 | 历史存档 |
 
-> **版本号缺口说明**：`v1.9.7` ~ `v1.9.11` 开发期未做实体归档（同一工作目录迭代覆盖），**没有可安装包**，因此不提供 release；这些版本的完整变更记录见 v1.9.12 的 `CHANGELOG.md`。
+> **版本号缺口说明**：`v1.13.0` ~ `v1.13.11` 与早期 `v1.9.7` ~ `v1.9.11` 均为同一工作目录连续迭代（未做实体归档），**没有可安装包**，因此不提供 tag/release；这些版本的完整变更记录见 `v1.13.12` / `v1.9.12` 的 `CHANGELOG.md`。`v1.13.12` 起的每个版本都有独立 tag、release 与可安装 zip。
 
 **安装步骤**（KernelSU → 模块 → 刷入 zip；或直接用 KernelSU 管理器安装 zip）：
 
@@ -45,6 +49,17 @@ MemTonic 是**配套本仓库临时 root 环境使用**的 KernelSU 模块：软
 3. 重启框架（KernelSU 软重启）后生效，状态见 `sh /data/adb/modules/rmg_memtonic/scripts/memtonic.sh status`
 
 **升级**：`service.sh` 不重跑软重启（会丢 root），请用 `stop` + `start` 重启模块守护使新代码生效。
+
+## 📚 文档
+
+| 文档 | 位置 |
+|---|---|
+| 安装与升级、常见问题、版本记录、安全边界与工作原理 | [`docs/wiki/`](docs/wiki/)（Wiki 源文件，5 页） |
+| 逐版本完整变更 | [`modules/rmg_memtonic/CHANGELOG.md`](modules/rmg_memtonic/CHANGELOG.md) |
+| 开发进度快照 | [`docs/progress/`](docs/progress/) |
+| 事故取证与分析报告 | [`docs/analysis/`](docs/analysis/) |
+
+> **关于 GitHub Wiki**：本仓库 Wiki 尚未在网页端初始化（GitHub 要求先手动创建首页，之后才能 `git push`）。页面内容已版本化在 `docs/wiki/`；初始化后运行 [`docs/wiki/sync.sh`](docs/wiki/sync.sh) 即可一键同步（文件名与页面名一一对应）。
 
 ## ✅ 适用范围（务必核对）
 
