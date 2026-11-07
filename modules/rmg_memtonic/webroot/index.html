@@ -6,26 +6,26 @@
 <title>MemTonic 状态面板</title>
 <style>
   :root{
-    --bg:#121417;--card:#1b1f24;--card2:#22262f;--tx:#e8eaf0;--tx2:#9aa6b2;--line:#2b303b;
+    --bg:#121417;--card:#1b1f24;--card2:#22262f;--tx:#e8eaf0;--tx2:#aab6c2;--tx3:#8d99a6;--line:#2b303b;
     --ok:#4ade80;--warn:#fbbf24;--err:#f87171;--acc:#5b9cf5;
   }
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:var(--bg);color:var(--tx);font:14px/1.55 -apple-system,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;padding:14px 12px 28px;max-width:640px;margin:0 auto}
-  h1{font-size:17px;margin:2px 0 2px}
-  .sub{color:var(--tx2);font-size:12px;margin-bottom:10px}
+  h1{font-size:19px;margin:0 0 2px}
+  .sub{color:var(--tx2);font-size:12px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px}
   .card h2{font-size:13px;color:var(--tx2);margin-bottom:8px;font-weight:600}
-  .kvrow{display:flex;justify-content:space-between;align-items:center;padding:5px 0;font-size:13px}
+  .kvrow{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:6px 0;font-size:13px}
   .kvrow .k{color:var(--tx2)}
   .kvrow b{font-weight:600}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:8px}
   .n{font-size:21px;font-weight:700;line-height:1.2}
-  .t{color:var(--tx2);font-size:11px;margin-top:2px}
+  .t{color:var(--tx2);font-size:12px;margin-top:2px}
   .badge{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600}
   .b-ok{background:#14351f;color:#58d97a}
   .b-warn{background:#3a2a10;color:#f0b84a}
   .b-err{background:#3d1414;color:#f26d6d}
-  .b-mut{background:#232a32;color:#9aa6b2}
+  .b-mut{background:#232a32;color:#aab6c2}
   .bar{height:6px;border-radius:3px;background:var(--card2);overflow:hidden;margin-top:6px}
   .bar i{display:block;height:100%;border-radius:3px;transition:width .3s}
   button{display:inline-flex;align-items:center;justify-content:center;gap:6px;background:#232a32;color:var(--tx);border:1px solid #2f3944;border-radius:8px;min-height:44px;padding:10px 12px;font-size:13px;cursor:pointer}
@@ -40,122 +40,237 @@
   #busybar.on{display:flex}
   .spin{width:14px;height:14px;border:2px solid #24425f;border-top-color:#7cc4f2;border-radius:50%;animation:mtspin .8s linear infinite;flex:0 0 auto}
   @keyframes mtspin{to{transform:rotate(360deg)}}
-  #msg{font-size:12.5px;white-space:pre-wrap;margin-top:8px}
-  .list{font-size:12px;color:var(--tx2);word-break:break-all}
-  .hint{color:#66707b;font-size:11px;margin-top:8px}
+  #msg{font-size:12.5px;white-space:pre-wrap;margin-top:8px;color:var(--tx2)}
+  .list{font-size:12px;color:var(--tx2);overflow-wrap:anywhere}
+  .hint{color:var(--tx3);font-size:12px;margin-top:8px;line-height:1.55}
   .mono{font-variant-numeric:tabular-nums}
   .heapbar{height:10px;border-radius:5px;background:var(--card2);overflow:hidden;margin-top:8px;position:relative}
   .heapbar i{display:block;height:100%;border-radius:5px;transition:width .3s}
   .heapbar .tick{position:absolute;top:0;bottom:0;width:1px;background:#7a8593;opacity:.75}
   .ticks{position:relative;height:13px;margin-top:3px;font-size:10px;color:var(--tx2)}
-  .ticks span{position:absolute;transform:translateX(-50%);white-space:nowrap}
+  .ticks span{display:inline-block;white-space:nowrap}
   #mask{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;padding:20px;z-index:50}
   #mask.on{display:flex}
   #dlg{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;max-width:420px;width:100%}
   #dlg p{font-size:13px;white-space:pre-wrap;margin-bottom:14px}
   .dlgbtns{display:flex;gap:8px;justify-content:flex-end}
+  /* v1.13.13 UI-R1: 首屏分层 / 告警卡片化 / 折叠收纳 / 对比度修正 */
+  .hero{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}
+  .hero-state{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:600;white-space:nowrap}
+  .lamp{width:10px;height:10px;border-radius:50%;display:inline-block;flex:0 0 auto}
+  .lamp.ok{background:var(--ok);box-shadow:0 0 0 4px rgba(74,222,128,.14)}
+  .lamp.err{background:var(--err);box-shadow:0 0 0 4px rgba(248,113,113,.14)}
+  .pid{color:var(--tx3);font-size:12px;font-weight:400}
+  .meta{font-size:12px;color:var(--tx3);margin-top:6px;line-height:1.65}
+  .safety{display:none;align-items:flex-start;gap:10px;border:1px solid #7a2b2b;background:#2a1618;border-radius:10px;padding:11px 13px;margin-bottom:10px}
+  .safety .safeicon{font-size:18px;line-height:1.2}
+  .safety b{font-size:13.5px;color:#ff9b9b}
+  .safedesc{font-size:12px;color:var(--tx2);margin-top:3px;line-height:1.5}
+  .alerts{margin-bottom:10px}
+  .alert{border-radius:9px;padding:10px 12px;margin-bottom:8px;border:1px solid var(--line);background:var(--card)}
+  .alert.critical{border-color:#7a2b2b;background:#2a1618}
+  .alert.warn{border-color:#7a5c1e;background:#282114}
+  .alert.info{border-color:#2b4d6b;background:#16222e}
+  .atitle{font-size:13px;font-weight:700;margin-bottom:3px}
+  .alert.critical .atitle{color:#ff9b9b}
+  .alert.warn .atitle{color:#f5c86b}
+  .alert.info .atitle{color:#9ccbf5}
+  .adesc{font-size:12.5px;color:var(--tx2);line-height:1.5}
+  .aaction{font-size:12px;color:var(--tx);margin-top:5px;line-height:1.5}
+  .more summary,.raw summary{cursor:pointer;font-size:12px;color:var(--tx2);padding:7px 0;min-height:36px}
+  .rawbox{margin-bottom:10px}
+  .rawbox pre{font-size:11.5px;color:var(--tx3);white-space:pre-wrap;overflow-wrap:anywhere;background:var(--card2);padding:10px;border-radius:8px;max-height:220px;overflow:auto}
+  .metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:10px}
+  .metric{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:11px 12px;min-width:0}
+  .metric.full{grid-column:1 / -1}
+  .mlabel{font-size:12px;color:var(--tx2)}
+  .mval{font-size:21px;font-weight:700;line-height:1.35;margin-top:2px}
+  .msub{font-size:12px;color:var(--tx3);margin-top:3px;line-height:1.5}
+  .quick{margin-bottom:10px}
+  .quick button{width:100%}
+  .fold{background:var(--card);border:1px solid var(--line);border-radius:10px;margin-bottom:10px;overflow:hidden}
+  .fold>summary{list-style:none;cursor:pointer;padding:12px 14px;font-size:13px;font-weight:600;color:var(--tx2);display:flex;align-items:center;justify-content:space-between;min-height:44px}
+  .fold>summary::-webkit-details-marker{display:none}
+  .fold>summary::after{content:'▾';color:var(--tx3);font-size:14px;transition:transform .2s}
+  .fold[open]>summary::after{transform:rotate(180deg)}
+  .foldbody{padding:0 14px 12px}
+  .mini{background:var(--card2);border-radius:8px;padding:8px 10px}
+  .mini .n{font-size:19px}
+  .exline{padding:8px 0;border-bottom:1px solid var(--line);font-size:12px;color:var(--tx2)}
+  .exline b{display:block;color:var(--tx);font-size:12.5px;margin-bottom:2px}
+  .exline span{display:block;line-height:1.5}
+  .exline span+span{color:var(--tx3)}
+  .exline:last-child{border-bottom:none}
+  .snaprow{display:grid;grid-template-columns:1fr 1fr 1.4fr;gap:8px;font-size:12px;padding:7px 0;border-bottom:1px solid var(--line);color:var(--tx2)}
+  .snaprow.head{color:var(--tx3);font-weight:600}
+  .snaprow:last-child{border-bottom:none}
+  .snaprow span:last-child{overflow-wrap:anywhere}
+  .empty{font-size:12px;color:var(--tx3);padding:6px 0}
+  .advbtns button{min-height:40px;font-size:12.5px}
+  /* UI-R2: 状态胶囊 + ⓘ 信息弹层 */
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 6px}
+  .chip{display:inline-flex;align-items:center;gap:5px;background:var(--card);border:1px solid var(--line);border-radius:999px;padding:5px 9px;font-size:12px;color:var(--tx2);line-height:1.2}
+  .chip b,.chip .chipval{color:var(--tx);font-weight:600;font-size:12px}
+  .ib{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;min-height:0;padding:0;border-radius:50%;font-size:11px;font-weight:700;line-height:1;background:#243749;color:#9ccbf5;border:1px solid #35506b;flex:0 0 auto}
+  .ib:active{background:#31506e}
+  #imask{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;padding:20px;z-index:60}
+  #imask.on{display:flex}
+  #idlg{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;max-width:420px;width:100%;max-height:80vh;overflow:auto}
+  #idlg h3{font-size:15px;margin-bottom:10px}
+  #idlg .ibody{font-size:13px;color:var(--tx2);line-height:1.7;white-space:pre-wrap}
+  .foldhint{font-size:12px;color:var(--tx3);margin:0 0 8px;line-height:1.5}
+  .oprow{margin-bottom:10px}
+  .opdesc{font-size:12px;color:var(--tx2);margin-bottom:6px;line-height:1.5}
+  .oprow button{width:100%}
 </style>
 </head>
 <body>
-<h1>MemTonic 状态面板</h1>
-<div class="sub" id="ver">RMG MemTonic 内存与异常守护</div>
+<div class="hero">
+  <div>
+    <h1>MemTonic 状态面板</h1>
+    <div class="sub" id="ver">让手机少卡顿、少崩溃 · 只调优先级，不动数据</div>
+  </div>
+  <div class="hero-state" id="st_state">--</div>
+</div>
+<div class="chips">
+  <span class="chip">保护 <b id="st_guard_count">--</b><button type="button" class="ib" data-info="guards">i</button></span>
+  <span class="chip">权限 <span class="chipval" id="st_root">--</span><button type="button" class="ib" data-info="root">i</button></span>
+  <span class="chip">版本 <span class="chipval" id="st_ver">--</span><button type="button" class="ib" data-info="version">i</button></span>
+  <span id="st_guards" style="display:none"></span>
+</div>
+<div class="meta">数据更新 <span id="st_ts">--</span> · 下次刷新 <span id="st_next">--</span> <button type="button" class="ib" data-info="refresh">i</button></div>
 
 <div id="busybar"><span class="spin"></span><span id="busytxt">处理中…</span></div>
 
-<div class="card" style="padding:10px 14px">
-  <div class="kvrow"><span class="k">守护状态</span><span id="st_state">--</span></div>
-  <div class="kvrow"><span class="k">模块版本</span><span id="st_ver" class="mono">--</span></div>
-  <div class="kvrow"><span class="k">守护细分</span><span id="st_guards">--</span></div>
-  <div class="kvrow"><span class="k">root 权限</span><span id="st_root">--</span></div>
-  <div class="kvrow"><span class="k">数据更新时间</span><span id="st_ts">--</span></div>
-  <div class="kvrow"><span class="k">自动刷新</span><span id="st_next">--</span></div>
-</div>
-
-<div id="advise" class="card" style="display:none;border-color:var(--warn)">
-  <div class="list" id="advise_txt" style="color:var(--warn)"></div>
-</div>
+<div id="safety" class="safety"></div>
+<div id="advise" class="alerts" style="display:none"></div>
+<div id="advise_txt" class="rawbox" style="display:none"></div>
 
 <div id="errbox" class="card" style="display:none;border-color:var(--err)">
   <div class="list" id="e_txt" style="color:var(--err)"></div>
 </div>
 
-<div class="card">
-  <h2>内存与压力</h2>
-  <div class="kvrow"><span class="k">可用内存</span><b id="st_avail">--</b></div>
-  <div class="kvrow"><span class="k">mem PSI some / full (avg10)</span><b id="st_psi">--</b></div>
-  <div class="bar"><i id="psi_bar" style="width:0%;background:var(--ok)"></i></div>
-</div>
-
-<!-- P0-1: system_server 堆危机可视化。阈值取自底层当前常量（未实施的 430MB 前移不画入） -->
-<div class="card">
-  <h2>system_server 堆危机（09:16 OOM 同型指标）</h2>
-  <div class="kvrow"><span class="k">Java Heap 当前</span><b id="st_heap" class="mono">--</b></div>
-  <div class="heapbar">
-    <i id="heap_bar" style="width:0%;background:var(--ok)"></i>
-    <span class="tick" style="left:92.7%"></span>
-    <span class="tick" style="left:96.8%"></span>
-    <span class="tick" style="left:97.8%"></span>
+<div class="metrics">
+  <div class="metric">
+    <div class="mlabel">可用内存</div>
+    <div class="mval" id="st_avail">--</div>
+    <div class="bar"><i id="psi_bar" style="width:0%;background:var(--ok)"></i></div>
+    <div class="msub">内存压力 <span id="st_psi">--</span> <button type="button" class="ib" data-info="psi">i</button></div>
   </div>
-  <div class="ticks" style="height:auto;display:flex;justify-content:space-between;font-size:10px;margin-top:6px">
-    <span>0</span><span style="color:var(--warn)">460 泄压</span><span style="color:#fb923c">480 GC</span><span style="color:var(--err)">485 告警</span><span style="color:var(--err)">496 OOM</span>
+  <div class="metric">
+    <div class="mlabel">已做的保护</div>
+    <div class="mval" id="metric_events">--</div>
+    <div class="msub" id="metric_events_detail">14 类保护里，有几类今天动过</div>
   </div>
-  <div class="kvrow" style="margin-top:6px"><span class="k">水位判定</span><span id="st_heap_band">--</span></div>
-  <div class="kvrow"><span class="k">GC 加速 / 泄压失败</span><b id="st_gc_relief" class="mono">--</b></div>
-  <div class="kvrow"><span class="k">本周期止损建议 / 预测态</span><b id="st_advise_forecast" class="mono">--</b></div>
-  <div class="kvrow"><span class="k">最近探测 / 最近换页风暴</span><b id="st_probe_paging" class="mono" style="font-size:11px;font-weight:500">--</b></div>
-  <div class="hint">阈值按当前底层常量：460MB trim / 480MB GC 加速 / 485MB 告警 / 496MB OOM 线。数值来自 collect_stats.ssheap（KB）与 run/ 状态文件；危机建议与计数为本日志周期累计。</div>
-</div>
-
-<div class="card">
-  <h2>事件计数（本日志周期）</h2>
-  <div class="grid" id="cards"></div>
-  <div class="hint" id="logcycle">计数口径：本日志周期内累计；日志超过 512KB 自动截断后从零重新计数（v1.13.0 起由 256KB 上调）。管理器卡片为事件驱动/定时刷新的快照，数值可能落后本页一次刷新，以本页「数据更新时间」为准。</div>
-</div>
-
-<div class="card">
-  <h2>状态与约束</h2>
-  <div class="kvrow"><span class="k">雷鸟治理 FR-RN1</span><span id="st_rayneo">--</span></div>
-  <div class="kvrow"><span class="k">staged rollback（enabling）</span><b id="st_rollback" class="mono">--</b></div>
-  <div class="kvrow"><span class="k">HAL tombstone（累计 / 最近）</span><b id="st_hal" class="mono" style="font-size:12px">--</b></div>
-  <div class="kvrow"><span class="k">软重启策略</span><span class="t" style="max-width:64%;text-align:right;line-height:1.35">倒数第二手段；模块绝不代执行，须由您手动判断，且重启前确认无 staged rollback</span></div>
-  <div class="hint">模块全部能力均为只读观测与逐线程优先级调度；任何重启、拆回滚、停止应用的动作都不由模块发起。HAL tombstone 为历史累计（含 camera provider / thermal HAL 等，非致命），类型细分见 ①A 阶段 B 采样器。</div>
-</div>
-
-<div class="card">
-  <h2>守护操作</h2>
-  <div class="btns">
-    <button class="accent wide" data-act="start">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
-      启动守护并优化
-    </button>
-    <button class="wide danger" data-act="stop">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
-      停止守护
-    </button>
-    <button class="wide" data-act="restart">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
-      重启守护（全量清场）
-    </button>
-    <button class="wide" data-act="refresh">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
-      刷新数据
-    </button>
+  <div class="metric full">
+    <div class="mlabel">系统核心内存 <button type="button" class="ib" data-info="heap">i</button></div>
+    <div class="mval mono" id="st_heap">--</div>
+    <div class="heapbar">
+      <i id="heap_bar" style="width:0%;background:var(--ok)"></i>
+      <span class="tick" style="left:92.7%"></span>
+      <span class="tick" style="left:96.8%"></span>
+      <span class="tick" style="left:97.8%"></span>
+    </div>
+    <div class="ticks" style="height:auto;display:flex;justify-content:space-between;font-size:10px;margin-top:6px">
+      <span>0</span><span style="color:var(--warn)">460 清理</span><span style="color:#fb923c">480 加速</span><span style="color:var(--err)">485 告警</span><span style="color:var(--err)">496 危险</span>
+    </div>
+    <div class="msub" id="st_heap_band">--</div>
   </div>
-  <div id="msg"></div>
 </div>
 
-<div class="card">
-  <h2>最近快照</h2>
-  <div class="kvrow"><span class="k">灾难黑匣子</span></div>
-  <div class="list" id="bb">--</div>
-  <div class="kvrow" style="margin-top:8px"><span class="k">框架重启 incident</span></div>
-  <div class="list" id="inc">--</div>
-  <div class="hint">文件位于 /data/adb/modules/rmg_memtonic/run/</div>
+<div class="quick">
+  <button data-act="refresh" class="accent">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
+    刷新
+  </button>
+  <div class="foldhint" style="margin-top:6px">立刻重新看一次状态，不改任何设置 <button type="button" class="ib" data-info="btn-refresh">i</button></div>
 </div>
 
-<div class="hint">安全边界：不杀进程 / 不冻结 / 不动 zram / 不持久修改内核参数 / 不刷写任何分区；提权与降权均逐线程、逐一记录、可无损还原（nice ≤ -10 的既有特权线程不反向降级）；前台应用与相机调用享最高优先级；蓝牙音频与播放中应用不干预；微信消息实时性不受影响；软重启仅为倒数第二手段，模块绝不代执行，须由您手动判断；所有改动仅在临时 root 会话内生效、可验证可回滚。</div>
+<details class="fold">
+  <summary>内存细节</summary>
+  <div class="foldbody">
+    <div class="foldhint">上面那条内存条的详细读数 <button type="button" class="ib" data-info="crisis">i</button></div>
+    <div class="kvrow"><span class="k">回收加速 / 清理失败</span><b id="st_gc_relief" class="mono">--</b></div>
+    <div class="kvrow"><span class="k">重启建议 / 提前预警</span><b id="st_advise_forecast" class="mono">--</b></div>
+    <div class="kvrow"><span class="k">最近检查 / 最近内存吃紧</span><b id="st_probe_paging" class="mono" style="font-size:11px;font-weight:500">--</b></div>
+    <div class="hint">这些数字来自系统实时读数；日志超过 512KB 会重新开始计数。</div>
+  </div>
+</details>
+
+<details class="fold">
+  <summary>保护记录 · <span id="card_summary">14 类</span></summary>
+  <div class="foldbody">
+    <div class="foldhint">14 类保护各自做了多少次 <button type="button" class="ib" data-info="counts">i</button></div>
+    <div class="grid" id="cards"></div>
+    <details class="more" style="margin-top:8px"><summary>每一类具体管什么</summary><div id="card_explain"></div></details>
+    <div class="hint" id="logcycle">数字从本次日志周期开始累计；日志超过 512KB 会清零重算。管理器里的数字可能比这里慢一次刷新，以本页「数据更新时间」为准。</div>
+  </div>
+</details>
+
+<details class="fold">
+  <summary>运行状态与限制</summary>
+  <div class="foldbody">
+    <div class="foldhint">开关状态、风险提示与模块边界 <button type="button" class="ib" data-info="constraints">i</button></div>
+    <div class="kvrow"><span class="k">眼镜相关治理</span><span id="st_rayneo">--</span></div>
+    <div class="kvrow"><span class="k">未完成的更新回滚</span><b id="st_rollback" class="mono">--</b></div>
+    <div class="kvrow"><span class="k">系统异常记录（累计 / 最近）</span><b id="st_hal" class="mono" style="font-size:12px">--</b></div>
+    <div class="kvrow"><span class="k">关于重启</span><span class="t" style="max-width:64%;text-align:right;line-height:1.35">只能由你手动决定；先确认没有未完成的更新回滚</span></div>
+    <div class="hint">模块只看系统状态、调线程优先级；重启、拆回滚、停止应用都不会由它发起。系统异常记录是历史累计，多数不致命。</div>
+  </div>
+</details>
+
+<details class="fold">
+  <summary>最近记录</summary>
+  <div class="foldbody">
+    <div class="foldhint">内存异常与系统重启留下的现场 <button type="button" class="ib" data-info="snap">i</button></div>
+    <div class="mlabel" style="margin-bottom:4px">内存异常记录</div>
+    <div class="list" id="bb">--</div>
+    <div class="mlabel" style="margin:10px 0 4px">系统重启记录</div>
+    <div class="list" id="inc">--</div>
+    <div class="hint">文件位于 /data/adb/modules/rmg_memtonic/run/；此处仅显示解析后的时间、类型与原因。</div>
+  </div>
+</details>
+
+<details class="fold">
+  <summary>更多操作</summary>
+  <div class="foldbody advbtns">
+    <div class="foldhint">下面三个都会改变保护状态，点之前先看说明 <button type="button" class="ib" data-info="ops">i</button></div>
+    <div class="oprow">
+      <div class="opdesc">保护没在跑时，用它开启并做一次内存整理 <button type="button" class="ib" data-info="btn-start">i</button></div>
+      <button class="accent wide" data-act="start">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+        开启保护
+      </button>
+    </div>
+    <div class="oprow">
+      <div class="opdesc">临时停下所有保护，之前调过的优先级全部还原 <button type="button" class="ib" data-info="btn-stop">i</button></div>
+      <button class="wide danger" data-act="stop">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+        暂停保护
+      </button>
+    </div>
+    <div class="oprow">
+      <div class="opdesc">保护异常时重新拉起，约 5-10 秒没有护航 <button type="button" class="ib" data-info="btn-restart">i</button></div>
+      <button class="wide" data-act="restart">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+        重新启动保护
+      </button>
+    </div>
+    <div id="msg"></div>
+    <div class="hint">暂停 / 重启会短暂中断护航，且重启守护会污染 24h A/B 基线，仅在必要时使用。</div>
+  </div>
+</details>
+
+<details class="fold">
+  <summary>这个模块不会做什么</summary>
+  <div class="foldbody">
+    <div class="foldhint">完整技术口径 <button type="button" class="ib" data-info="safety">i</button></div>
+    <div class="hint">不会杀应用、不会冻结应用、不改系统设置、不刷写任何分区；所有优先级调整（提权与降权）都逐个线程记录、随时可还原；前台应用与相机优先，蓝牙音频、正在播放的应用、微信消息都不受影响；软重启是倒数第二手段，模块绝不代执行，须由您手动判断。</div>
+  </div>
+</details>
 
 <div id="mask"><div id="dlg"><p id="dtxt"></p><div class="dlgbtns"><button data-dlg="cancel">取消</button><button class="danger" data-dlg="ok">确认</button></div></div></div>
+<div id="imask"><div id="idlg"><h3 id="ititle">说明</h3><div class="ibody" id="itext"></div><div class="dlgbtns" style="margin-top:14px"><button type="button" data-info-close="1">知道了</button></div></div></div>
 
 <script>
 (function(){
@@ -268,41 +383,90 @@
     });
   }
 
+  // UI-R2: ⓘ 信息弹层。主界面只说人话，专业口径与底层行为说明集中在此。
+  // 每条说明均与模块真实实现一一对应，不夸大、不暗示模块会代执行任何动作。
+  var INFO_DEFS = {
+    guards: {t:'「保护 4/4」是什么意思', b:'面板靠 4 个小后台进程持续看护手机：\n· 主守护（memtonic）：总调度与自检\n· 风暴（storm_guard）：开机、软重启、相机调用的高峰期\n· CPU（cpu_guard）：按压力调整线程优先级\n· 护盾（fluency_shield）：前台流畅度最后一道防线\n\n4/4 表示 4 个都在正常运行；少于 4 说明有进程没起来。打开本说明会附带当前实时明细（✓ 正常 / ✗ 未运行）。'},
+    root: {t:'「权限正常」是什么意思', b:'这里的权限指临时 root（KernelSU 会话）。模块需要它读取系统状态、调整线程优先级。\n临时 root 在完整重启后会失效，需要重新获取；本面板不会自己去申请，也不会改动系统分区。'},
+    version: {t:'版本信息', b:'v1.13.13 这类编号是模块版本；vc53 是内部版本号（versionCode），供管理器判断是否需要更新。\n统计口径：本日志周期——日志超过 512KB 会截断并从零重新计数。'},
+    refresh: {t:'自动刷新', b:'面板每 30 秒重新读一次状态，只在页面可见时执行，不额外唤醒手机。点「刷新」可立刻重读一次，不改变任何设置。'},
+    psi: {t:'内存压力', b:'两个百分比是 PSI（Pressure Stall Information）avg10 读数：前一个表示「有些任务因内存慢下来」的时间占比，后一个表示「全部任务都卡住」的占比。\n数值越高越卡；达到 30% 会标红。数值来自 collect_stats 的 psi_s10 / psi_f10。'},
+    heap: {t:'系统核心内存', b:'指 system_server 的 Java 堆占用（MB）。\n阈值：460 泄压（trim 开始清理）、480 GC 加速（提权 ART GC 线程）、485 告警、496 OOM 线（接近系统强杀）。\n数值来自 collect_stats.ssheap（KB），与危机链同源；刻度条按 496MB 归一化。'},
+    crisis: {t:'内存细节（技术口径）', b:'阈值按当前底层常量：460MB trim / 480MB GC 加速 / 485MB 告警 / 496MB OOM 线。数值来自 collect_stats.ssheap（KB）与 run/ 状态文件；危机建议与计数为本日志周期累计（日志超 512KB 自动截断后从零重新计数）。\nGC 加速 = 堆高时提权 ART GC 守护线程；泄压失败 = am send-trim-memory 不可达。'},
+    counts: {t:'保护记录怎么读', b:'「本周期事件」指本日志周期内 14 类保护动作的累计次数；日志超过 512KB 自动截断后从零重新计数（v1.13.0 起由 256KB 上调）。\n「已触发」表示这一类真的动过；「待命中」表示条件没满足、没做任何调整。下面「每一类具体管什么」保留原始口径与触发条件，供排查用。'},
+    constraints: {t:'运行状态与限制', b:'眼镜相关治理 = FR-RN1：对雷鸟 App 后台渲染 / 池线程温和降权；语音链路在启动削峰时被单独豁免。「已暂停」表示 disable_rayneo_guard 标记存在，治理临时关闭（安全状态）。\n未完成的更新回滚 = staged rollback（state=enabling），数量大于 0 时严禁重启。\n系统异常记录 = HAL tombstone，来自 dropbox 的历史崩溃档案，多数非致命。\n模块只做只读观测与逐线程优先级调度，不发起重启、拆回滚或停止应用。'},
+    rollback: {t:'什么是未完成的更新回滚', b:'staged rollback 是系统已下载、等待重启生效的更新回滚会话（state=enabling）。\n此时重启可能触发完整重启并丢失临时 root，因此面板显示「禁止重启」，并抑制自动重启建议。模块绝不代执行任何重启，请先手动核查回滚状态。'},
+    snap: {t:'最近记录', b:'内存异常记录（blackbox）与系统重启记录（incident）来自模块 run/ 目录的快照文件。\n这里只显示解析后的时间、类型与原因；原始文件名、key=value 日志收在首屏「查看原始诊断数据」里。文件位于 /data/adb/modules/rmg_memtonic/run/。'},
+    ops: {t:'三个操作的区别', b:'开启保护：保护没在跑时拉起 4 个进程并做一次内存整理。\n暂停保护：全部退出、还原所有优先级调整，之后不再护航。\n重新启动保护：先停后拉，约 5-10 秒无护航，用于保护异常时自愈。\n三者都会弹确认框；24h A/B 基线期内重启守护会污染基线，非必要不要用。'},
+    'btn-start': {t:'「开启保护」会做什么', b:'拉起 4 个保护进程并立刻做一次内存整理，约 30 秒。\n技术细节：执行 service.sh 后调用 memtonic.sh optimize，对 Launcher 提权，息屏时执行内存整理。\n若保护已在运行，按钮会被禁用，避免重复启动。'},
+    'btn-stop': {t:'「暂停保护」会做什么', b:'让 4 个保护进程全部退出；之前做过的所有优先级调整会原样还原，期间不再有任何护航。\n技术细节：调用 memtonic.sh stop；降权与核亲和约束均会无损还原（FR-RN1 降权状态同步清场）。'},
+    'btn-restart': {t:'「重新启动保护」会做什么', b:'先全部停下、再重新拉起 4 个保护进程，约 5-10 秒没有护航；所有调整会原样还原。\n⚠ 24h A/B 基线期重启守护会污染基线，仅在必要时使用。\n技术细节：memtonic.sh stop → service.sh 幂等拉起，不调用阻塞式 restart。'},
+    'btn-refresh': {t:'「刷新」会做什么', b:'立刻重新读取一次状态，不改变任何设置、不动保护进程、不重启任何东西。'},
+    'alert-reboot': {t:'关于手动重启', b:'软重启仅为倒数第二手段，模块绝不代执行，须由您手动判断；重启前确认无 staged rollback 活动。\n「trim 两次无效」表示系统两次尝试清理内存都没降下来，通常是真泄漏特征。'},
+    'alert-startrejected': {t:'重复启动被拦下', b:'已有存活实例的幂等保护，无需处理。这是正常防重机制，不是故障。'},
+    'alert-rootlost': {t:'临时权限断开', b:'临时 root 可能已失效，请检查 KSU 会话。完整重启后临时 root 会失效，需要重新获取。'},
+    'alert-boot': {t:'上次不是正常关机', b:'boot_context.flag 记录了 boot_reason、rescue_boot_count（救助启动计数）等。计数变化说明系统经历过异常重启，建议核对发起者。'},
+    'alert-rollback': {t:'系统正在回滚更新', b:'CrashRecovery 正在回滚模块（rollback_warn.flag）。完整重启可能即将或已经发生，临时 root 会丢失。请立即核查回滚状态，模块不会代为执行任何操作。'},
+    'alert-paging': {t:'内存很吃紧', b:'灾难级换页风暴：majflt >10 万/60s，属软重启前兆。建议关闭大型后台应用；模块不会代执行重启。'},
+    'alert-rss': {t:'系统占用持续上涨', b:'RSS 膨胀趋势：system_server native 内存持续上升，Java 堆水位管不了，建议关注。'},
+    'alert-suppressed': {t:'重启建议被按住', b:'存在 staged rollback，重启可能触发完整重启丢 root；模块绝不代执行任何重启，请先核查 rollback。'},
+    safety: {t:'安全边界（完整技术口径）', b:'不杀进程 / 不冻结 / 不动 zram / 不持久修改内核参数 / 不刷写任何分区；提权与降权均逐线程、逐一记录、可无损还原（nice ≤ -10 的既有特权线程不反向降级）；前台应用与相机调用享最高优先级；蓝牙音频与播放中应用不干预；微信消息实时性不受影响；软重启仅为倒数第二手段，模块绝不代执行，须由您手动判断；所有改动仅在临时 root 会话内生效、可验证可回滚。'}
+  };
+  function infoBox(key){
+    var d = INFO_DEFS[key];
+    if (!d) return;
+    document.getElementById('ititle').textContent = d.t;
+    var body = d.b;
+    if (key === 'guards'){
+      var g = document.getElementById('st_guards');
+      body += '\n\n当前明细：' + (g ? (g.textContent || '').replace(/\s+/g,' ').trim() : '读取中');
+      var pid = document.getElementById('st_state').getAttribute('data-pid');
+      if (pid) body += '\n主守护进程号：' + pid;
+    }
+    if (key === 'version'){
+      var vc = document.getElementById('st_ver').getAttribute('data-vc');
+      if (vc) body += '\n\n当前内部版本号：vc' + vc;
+    }
+    document.getElementById('itext').textContent = body;
+    document.getElementById('imask').className = 'on';
+  }
+
   // ---------- 4. 渲染（定点更新，不整页重建） ----------
   // [id, kvKey, title, 口径说明, 触发条件的白话描述]
   var CARD_DEFS = [
-    ['shield','shield','护栏护航','系统拥堵时精准护航前台渲染链的次数','CPU PSI ≥35% 或 mem PSI ≥10%'],
-    ['storm','storm','启动风暴','框架软重启 / 开机风暴 / 借相机风暴态窗口次数','system_server 重启或 FR-C3 风暴态'],
-    ['crash','crash','崩溃雷达','捕获到的崩溃 / ANR 事件数','dropbox 出现新崩溃'],
-    ['rogue','rogue','毒瘤降权','长时间高 CPU 应用的温和降权 / 核亲和约束次数','连续 3 轮 >50% CPU'],
-    ['compact','compact','内存压实','按需执行内存整理的次数','息屏高压 / kswapd 换页 / 预测态前置压实'],
-    ['blackbox','blackbox','灾难黑匣子','内存风暴时的现场快照落盘数','内存压力 >=25% 持续 2 分钟'],
-    ['rollback','rollback','地雷告警','检出 staged rollback 高危状态的次数','出现待生效 / enabling 的回滚会话'],
-    ['mjburst','mjburst','重负载指纹','前台 major fault 突增预警次数','突发 majflt（灾难级 >10 万/60s）'],
-    ['bt','bt','蓝牙护航','蓝牙音频栈 / LE-GATT 压力 / 断连重连护航次数','蓝牙放音或 GATT 压力且系统拥堵'],
-    ['flush','flush','借相机护航','face 服务借相机时提权 camera provider 线程（59-79 线程，15s 或条件消失还原）','provider 线程 D 状态 或 CPU PSI ≥35% / mem PSI ≥10%'],
-    ['gcboost','gcboost','GC 加速','堆危机时 ART GC 守护线程提权 -10 加速回收的次数','堆 ≥480MB 或泄压失败 ≥2'],
-    ['ssprobe','ssprobe','堆危机探测','system_server Java 堆水位探测与 trim 泄压次数','RSS ≥700MB / 线程 ≥600 / 定时探测 / trim 复测'],
-    ['forecast','forecast','预测与压实','内存余量预测态与前置压实次数','avail <2.5GB 且 swap >7.5GB 连续 3 轮'],
-    ['bt3','bt3','断连护航','雷鸟 BR/EDR 断连后 LE 重连窗口护航次数','ACL_DISCONNECTED(RayNeo) 广播命中']
+    ['shield','shield','前台加速','系统拥堵时精准护航前台渲染链的次数','CPU PSI ≥35% 或 mem PSI ≥10%'],
+    ['storm','storm','开机护航','框架软重启 / 开机风暴 / 借相机风暴态窗口次数','system_server 重启或 FR-C3 风暴态'],
+    ['crash','crash','崩溃记录','捕获到的崩溃 / ANR 事件数','dropbox 出现新崩溃'],
+    ['rogue','rogue','后台限速','长时间高 CPU 应用的温和降权 / 核亲和约束次数','连续 3 轮 >50% CPU'],
+    ['compact','compact','内存整理','按需执行内存整理的次数','息屏高压 / kswapd 换页 / 预测态前置压实'],
+    ['blackbox','blackbox','异常快照','内存风暴时的现场快照落盘数','内存压力 >=25% 持续 2 分钟'],
+    ['rollback','rollback','回滚风险','检出 staged rollback 高危状态的次数','出现待生效 / enabling 的回滚会话'],
+    ['mjburst','mjburst','卡顿预警','前台 major fault 突增预警次数','突发 majflt（灾难级 >10 万/60s）'],
+    ['bt','bt','蓝牙保护','蓝牙音频栈 / LE-GATT 压力 / 断连重连护航次数','蓝牙放音或 GATT 压力且系统拥堵'],
+    ['flush','flush','相机加速','face 服务借相机时提权 camera provider 线程（59-79 线程，15s 或条件消失还原）','provider 线程 D 状态 或 CPU PSI ≥35% / mem PSI ≥10%'],
+    ['gcboost','gcboost','回收加速','堆危机时 ART GC 守护线程提权 -10 加速回收的次数','堆 ≥480MB 或泄压失败 ≥2'],
+    ['ssprobe','ssprobe','内存检查','system_server Java 堆水位探测与 trim 泄压次数','RSS ≥700MB / 线程 ≥600 / 定时探测 / trim 复测'],
+    ['forecast','forecast','提前整理','内存余量预测态与前置压实次数','avail <2.5GB 且 swap >7.5GB 连续 3 轮'],
+    ['bt3','bt3','眼镜重连','雷鸟 BR/EDR 断连后 LE 重连窗口护航次数','ACL_DISCONNECTED(RayNeo) 广播命中']
   ];
+  // UI-R1: 卡片只留数字+标题+状态；口径与触发条件收进折叠说明，消除文字墙
   function buildCards(){
-    var html = '';
+    var html = '', expl = '';
     for (var i=0;i<CARD_DEFS.length;i++){
       var d = CARD_DEFS[i];
-      html += '<div><div class="n" id="c_' + d[0] + '">-</div>'
-        + '<div class="t">' + d[2] + ' <span id="s_' + d[0] + '" class="badge b-mut" style="font-size:10px;padding:1px 7px"></span></div>'
-        + '<div class="t" style="opacity:.72">' + d[3] + '</div>'
-        + '<div class="t" style="opacity:.55">触发：' + d[4] + '</div></div>';
+      html += '<div class="mini"><div class="n" id="c_' + d[0] + '">-</div>'
+        + '<div class="t">' + d[2] + ' <span id="s_' + d[0] + '" class="badge b-mut" style="font-size:10px;padding:1px 7px"></span></div></div>';
+      expl += '<div class="exline"><b>' + d[2] + '</b><span>' + d[3] + '</span><span>触发：' + d[4] + '</span></div>';
     }
     document.getElementById('cards').innerHTML = html;
+    document.getElementById('card_explain').innerHTML = expl;
   }
   function set(id, val){
     var el = document.getElementById(id);
     if (el) el.textContent = (val === undefined || val === null || val === '') ? '--' : String(val);
   }
 
-  /* @pure-functions-start —— 无 DOM 依赖，Node 单元测试按标记整段提取执行 */
+  /* @pure-functions-start */
   function parseKv(s){
     var kv = {}, toks = (s||'').trim().split(/\s+/);
     for (var i=0;i<toks.length;i++){
@@ -381,6 +545,34 @@
       probePaging: fmtStamp(kv.last_probe) + ' / ' + fmtStamp(kv.paging_last)
     };
   }
+  // UI-R1: 快照原始输出 -> 时间/类型/原因三列（不显示文件名与装饰分隔线）
+  function fmtSnapshot(text){
+    var arr = String(text || '').split('\n'), out = [];
+    var rmap = {soft_reboot:'框架软重启',oom:'OOM 堆满',trim_ineffective:'trim 两次无效',
+      paging_storm:'换页风暴',staged_rollback:'staged rollback',watchdog:'Watchdog'};
+    for (var i=0;i<arr.length;i++){
+      var line = arr[i].trim().replace(/.*\//,'');
+      if (!line) continue;
+      var p = line.indexOf('|');
+      var name = (p > 0 ? line.slice(0,p) : line).trim();
+      var rest = (p > 0 ? line.slice(p+1) : '').trim();
+      rest = rest.replace(/^[=\-|\s]+/,'').replace(/[=\-\s]+$/,'');
+      rest = rest.replace(/INCIDENT SNAPSHOT|BLACKBOX SNAPSHOT/ig,'')
+                 .replace(/^[=\-|\s]+/,'').replace(/[=\-\s]+$/,'').trim();
+      if (/^===|^---/.test(name)) continue;
+      var m = /(\d{8})_(\d{6})/.exec(name);
+      var time = m ? (m[1].slice(4,6)+'-'+m[1].slice(6,8)+' '+m[2].slice(0,2)+':'+m[2].slice(2,4)) : '--';
+      var rm = /reason=([A-Za-z0-9_]+)/.exec(rest);
+      var reason = rm ? (rmap[rm[1]] || rm[1]) : (rest ? rest.slice(0,28) : '常规快照');
+      var kind = /incident/i.test(name) ? '框架事件' : (/blackbox/i.test(name) ? '内存快照' : '快照');
+      out.push({time:time, type:kind, reason:reason});
+    }
+    return out.slice(0,5);
+  }
+  function escapeHtml(s){
+    return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
   /* @pure-functions-end */
 
   function renderStatus(kv){
@@ -389,9 +581,11 @@
     setDisabled(busy);
     var sbStart = document.querySelector('button[data-act="start"]');
     if (sbStart) sbStart.title = running ? '守护已在运行（pid ' + (kv.pid || '?') + '），无需重复启动' : '';
-    document.getElementById('st_state').innerHTML = running
-      ? '<span class="badge b-ok">运行中</span> <span class="badge b-mut">pid ' + (kv.pid||'?') + '</span>'
-      : '<span class="badge b-err">已停止</span>';
+    var stEl = document.getElementById('st_state');
+    if (running) stEl.setAttribute('data-pid', kv.pid || '?'); else stEl.removeAttribute('data-pid');
+    stEl.innerHTML = running
+      ? '<span class="lamp ok"></span><span>运行中</span>'
+      : '<span class="lamp err"></span><span>已停止</span>';
     var avail = Math.round(int0(kv.avail_kb)/1024);
     set('st_avail', avail > 0 ? avail + ' MB' : '--');
     var ps = kv.psi_s10, pf = kv.psi_f10;
@@ -403,6 +597,7 @@
     var bar = document.getElementById('psi_bar');
     bar.style.width = pct + '%';
     bar.style.background = pn >= 30 ? 'var(--err)' : (pn >= 15 ? 'var(--warn)' : 'var(--ok)');
+    var nonzero = 0, names = [];
     for (var i=0;i<CARD_DEFS.length;i++){
       var d = CARD_DEFS[i];
       var raw = kv[d[1]];
@@ -410,10 +605,13 @@
       set('c_' + d[0], v);
       var sb = document.getElementById('s_' + d[0]);
       if (sb){
-        if (parseInt(v,10) > 0){ sb.className = 'badge b-ok'; sb.textContent = '已触发 ' + v; }
-        else { sb.className = 'badge b-mut'; sb.textContent = '待命中'; }
+        if (parseInt(v,10) > 0){ sb.className = 'badge b-ok'; sb.textContent = '动过 ' + v + ' 次'; nonzero++; if (names.length < 3) names.push(d[2]); }
+        else { sb.className = 'badge b-mut'; sb.textContent = '没动过'; }
       }
     }
+    set('metric_events', nonzero + ' / ' + CARD_DEFS.length);
+    set('card_summary', CARD_DEFS.length + ' 类里 ' + nonzero + ' 类动过');
+    set('metric_events_detail', names.length ? ('最近动过：' + names.join('、')) : '暂时都没动过；点「保护记录」看全部');
     // P0-1: 堆水位（collect_stats.ssheap，单位 KB）——此前该字段已采集但面板未渲染
     var hm = fmtMb(kv.ssheap);
     set('st_heap', hm === null ? '--' : hm + ' MB');
@@ -422,17 +620,57 @@
     if (hbar){ hbar.style.width = band.pct + '%'; hbar.style.background = band.color; }
     var hcls = band.key === 'ok' ? 'b-ok' : (band.key === 'trim' ? 'b-warn' : (band.key === 'na' ? 'b-mut' : 'b-err'));
     var hbl = document.getElementById('st_heap_band');
-    if (hbl) hbl.innerHTML = '<span class="badge ' + hcls + '">' + band.label + '</span>';
+    var bandText = {ok:'正常', trim:'开始清理', gc:'加速回收', alert:'接近上限', critical:'危险', na:'暂无数据'};
+    if (hbl) hbl.innerHTML = '<span class="badge ' + hcls + '">' + (bandText[band.key] || band.label) + '</span>';
   }
 
-  function li(text){
-    var arr = (text||'').trim().split('\n').filter(function(x){ return x.length > 0; });
-    if (!arr.length) return '（无）';
-    var out = '';
-    for (var i=0;i<arr.length;i++){
-      out += '<div>' + arr[i].replace(/.*\//,'') + '</div>';
+  // UI-R1: 告警按严重度排序成独立卡片，最多直显 2 条；原始日志收进折叠
+  function alertHtml(a){
+    return '<div class="alert ' + a.level + '"><div class="atitle">' + a.icon + ' ' + a.title
+      + (a.info ? ' <button type="button" class="ib" data-info="' + a.info + '">i</button>' : '') + '</div>'
+      + '<div class="adesc">' + a.desc + '</div>'
+      + (a.action ? '<div class="aaction">→ ' + a.action + '</div>' : '') + '</div>';
+  }
+  function renderAlerts(alerts){
+    var box = document.getElementById('advise'), rawbox = document.getElementById('advise_txt');
+    if (!alerts.length){ box.style.display = 'none'; rawbox.style.display = 'none'; return; }
+    var order = {critical:0, warn:1, info:2};
+    alerts.sort(function(a,b){ return order[a.level] - order[b.level]; });
+    var h = '', i;
+    for (i=0;i<Math.min(2,alerts.length);i++) h += alertHtml(alerts[i]);
+    if (alerts.length > 2){
+      h += '<details class="more"><summary>还有 ' + (alerts.length-2) + ' 条告警</summary>';
+      for (i=2;i<alerts.length;i++) h += alertHtml(alerts[i]);
+      h += '</details>';
     }
-    return out;
+    box.innerHTML = h; box.style.display = '';
+    var raws = [];
+    for (i=0;i<alerts.length;i++) if (alerts[i].raw) raws.push(alerts[i].title + '：' + alerts[i].raw);
+    if (raws.length){
+      rawbox.innerHTML = '<details class="raw"><summary>查看原始诊断数据（' + raws.length + ' 条）</summary><pre>'
+        + escapeHtml(raws.join('\n')) + '</pre></details>';
+      rawbox.style.display = '';
+    } else rawbox.style.display = 'none';
+  }
+  function renderSafety(n){
+    var el = document.getElementById('safety');
+    if (int0(n) > 0){
+      el.innerHTML = '<div class="safeicon">⛔</div><div><b>禁止重启 · 系统有 ' + int0(n) + ' 个未完成的更新回滚</b>'
+        + ' <button type="button" class="ib" data-info="rollback">i</button>'
+        + '<div class="safedesc">这时重启可能触发完整重启、丢失临时权限。请先手动确认，面板不会替你操作。</div></div>';
+      el.style.display = 'flex';
+    } else el.style.display = 'none';
+  }
+  // UI-R1: 最近快照只显示解析后的时间 / 类型 / 原因
+  function renderSnap(elId, text){
+    var rows = fmtSnapshot(text), el = document.getElementById(elId);
+    if (!rows.length){ el.innerHTML = '<div class="empty">（无）</div>'; return; }
+    var h = '<div class="snaprow head"><span>时间</span><span>类型</span><span>原因</span></div>';
+    for (var i=0;i<rows.length;i++){
+      h += '<div class="snaprow"><span>' + escapeHtml(rows[i].time) + '</span><span>' + escapeHtml(rows[i].type)
+        + '</span><span>' + escapeHtml(rows[i].reason) + '</span></div>';
+    }
+    el.innerHTML = h;
   }
 
   async function refresh(){
@@ -473,12 +711,12 @@
       var parts = (r2.stdout || '').split('---');
       // P2 审查修复：第二次 exec 失败/分段异常不再静默降级（原实现会让状态区显示 -- 却无任何提示）
       if (r2.errno !== 0 || !r2.stdout || parts.length < 11){
-        showErr('状态明细读取不完整（errno=' + r2.errno + '，分段 ' + parts.length + '/11）：下方部分字段显示 --，主状态与事件计数仍有效。请点「刷新数据」重试。');
+        showErr('状态明细读取不完整（errno=' + r2.errno + '，分段 ' + parts.length + '/11）：部分数字会显示 --，上面的主状态仍有效，点「刷新」再试一次。');
       } else {
         showErr('');
       }
-      document.getElementById('bb').innerHTML = li(parts[0]);
-      document.getElementById('inc').innerHTML = li(parts[1]);
+      renderSnap('bb', parts[0]);
+      renderSnap('inc', parts[1]);
       var adv = (parts[2] || '').trim();
       var bootc = (parts[3] || '').trim();
       var rollw = (parts[4] || '').trim();
@@ -490,49 +728,56 @@
       var rb = parseKv(parts[10] || '');
 
       // P0-2: 版本 / 四守护 / root / FR-RN1 旁路 / rollback enabling
-      set('st_ver', (st.ver || '--') + (st.vc ? ' / vc' + st.vc : ''));
+      set('st_ver', st.ver || '--');
+      document.getElementById('st_ver').setAttribute('data-vc', st.vc || '');
       var gd = fmtGuard(st);
       var hasGuards = false;
       for (var gk in st){ if (gk.indexOf('g_') === 0) { hasGuards = true; break; } }
       document.getElementById('st_guards').innerHTML = hasGuards
         ? gd.html + ' <span class="badge b-mut" style="font-size:10px;padding:1px 6px">' + gd.alive + '/4</span>'
         : '--';
-      document.getElementById('st_root').innerHTML = st.root === '0'
-        ? '<span class="badge b-ok">root 正常</span>'
-        : ((st.root === undefined || st.root === '') ? '--' : '<span class="badge b-err">非 root (' + st.root + ')</span>');
+      set('st_guard_count', hasGuards ? (gd.alive + '/4') : '--');
+      document.getElementById('st_root').textContent = st.root === '0'
+        ? '正常'
+        : ((st.root === undefined || st.root === '') ? '--' : '异常');
       var rbx = st.rayneo_bypass;
       document.getElementById('st_rayneo').innerHTML = rbx === 'ON'
-        ? '<span class="badge b-warn">已旁路（disable flag 存在）</span>'
+        ? '<span class="badge b-warn">已暂停</span>'
         : (rbx === 'OFF'
-            ? '<span class="badge b-ok">运行中' + (int0(st.rayneo_lines) > 0 ? ' · 已治理 ' + st.rayneo_lines + ' 线程' : '') + '</span>'
+            ? '<span class="badge b-ok">运行中' + (int0(st.rayneo_lines) > 0 ? ' · 已调 ' + st.rayneo_lines + ' 个线程' : '') + '</span>'
             : '--');
       set('st_rollback', rb.rb_enabling === undefined || rb.rb_enabling === '' ? '--' : rb.rb_enabling);
       set('st_hal', fmtHal(rb.hal_total, rb.hal_latest).text);   // P2: HAL tombstone 累计/最近
+      renderSafety(rb.rb_enabling);
       // P0-1: 危机链（GC 加速 / 泄压失败 / 止损建议历史 / 预测态 / 最近探测）
       var fc = fmtCrisis(cr);
       set('st_gc_relief', fc.gcRelief);
       set('st_advise_forecast', fc.adviseForecast);
       set('st_probe_paging', fc.probePaging);
-      document.getElementById('ver').textContent = 'RMG MemTonic ' + (st.ver || '') + ' · 统计口径：本日志周期';
-      var msgs = [];
+      document.getElementById('ver').textContent = 'RMG MemTonic ' + (st.ver || '') + ' · 少卡顿、少崩溃，只调优先级不动数据';
+      // UI-R1: 告警结构化——每条独立卡片，原始 key=value 不再直出；UI-R2 主文案白话、术语进 ⓘ
+      var alerts = [];
       if (adv) {
         var at = adviseText(adv);          // P1-3: 按 flag 的 reason= 给出对应解释
-        msgs.push('⚠ 软重启建议（仅供参考，来源：' + at.reason + '）：' + at.text + '。软重启仅为倒数第二手段，模块绝不代执行，须由您手动判断；重启前确认无 staged rollback 活动。');
+        alerts.push({level:'warn', icon:'⚠', title:'建议由你手动重启一次',
+          desc:'系统两次清理内存都没降下来，像是有真泄漏。',
+          action:'先看下面「禁止重启」，再自己决定', info:'alert-reboot', raw:adv});
       }
-      if (int0(st.ex_rejected) > 0) msgs.push('ℹ 守护启动被拒：本周期 ' + st.ex_rejected + ' 次（已有存活实例的幂等保护，无需处理）。');
-      if (int0(st.ex_rootlost) > 0) msgs.push('⛔ root 会话曾丢失导致守护退出 ' + st.ex_rootlost + ' 次——临时 root 可能已失效，请检查 KSU 会话。');
-      if (bootc) msgs.push('ℹ 开机善后：' + bootc + ' —— 非常规重启原因/救助计数/上次会话异常中断，建议核对发起者。');
-      if (rollw) msgs.push('⛔ 救助链回滚征兆：' + rollw + ' —— CrashRecovery 正在回滚模块，完整重启即将/已发生（root 将丢失）。');
-      if (pagestrm) msgs.push('🌀 换页风暴：' + pagestrm + ' —— 灾难级 majflt（>10 万/60s），软重启前兆，建议关闭大型后台应用；模块不会代执行重启。');
-      if (rsswarn) msgs.push('📊 RSS 膨胀趋势：' + rsswarn + ' —— system_server native 内存持续上升（Java 堆水位管不了），建议关注。');
-      if (suppr) msgs.push('🔒 软重启建议被抑制：' + suppr + ' —— 存在 staged rollback，重启可能触发完整重启丢 root；模块绝不代执行任何重启，请先核查 rollback。');
-      var ab = document.getElementById('advise');
-      if (msgs.length){
-        ab.style.display = '';
-        document.getElementById('advise_txt').textContent = msgs.join(' ｜ ');
-      } else {
-        ab.style.display = 'none';
-      }
+      if (int0(st.ex_rejected) > 0) alerts.push({level:'info', icon:'ℹ', title:'重复开启被拦下 ' + st.ex_rejected + ' 次',
+        desc:'已经在运行了，不用管。', action:'', info:'alert-startrejected', raw:''});
+      if (int0(st.ex_rootlost) > 0) alerts.push({level:'critical', icon:'⛔', title:'临时权限断开过 ' + st.ex_rootlost + ' 次',
+        desc:'临时 root 可能已失效，请检查 KSU 会话。', action:'重新获取临时权限', info:'alert-rootlost', raw:''});
+      if (bootc) alerts.push({level:'info', icon:'ℹ', title:'上次不是正常关机',
+        desc:'系统救助计数有变化，建议确认是谁触发的。', action:'核对一下重启原因', info:'alert-boot', raw:bootc});
+      if (rollw) alerts.push({level:'critical', icon:'⛔', title:'系统正在回滚更新',
+        desc:'完整重启可能已经发生，临时权限会丢失。', action:'去确认回滚状态', info:'alert-rollback', raw:rollw});
+      if (pagestrm) alerts.push({level:'warn', icon:'🌀', title:'内存很吃紧',
+        desc:'正在频繁换页，容易卡顿。', action:'关掉占内存的大应用', info:'alert-paging', raw:pagestrm});
+      if (rsswarn) alerts.push({level:'info', icon:'📊', title:'系统占用持续上涨',
+        desc:'这块内存不受清理机制管，先观察。', action:'暂时不用处理', info:'alert-rss', raw:rsswarn});
+      if (suppr) alerts.push({level:'warn', icon:'🔒', title:'重启建议已被按住',
+        desc:'有未完成的更新回滚，现在重启可能丢失临时权限。', action:'先确认回滚状态', info:'alert-suppressed', raw:suppr});
+      renderAlerts(alerts);
     } catch(e){
       showErr('刷新异常：' + e);
     }
@@ -541,10 +786,10 @@
 
   // ---------- 5. 操作 ----------
   async function doStart(){
-    var ok = await confirmBox('确认启动守护并执行系统优化？\n\n将拉起守护进程、对 Launcher 提权，并在息屏时执行内存整理。\n此操作约需 30 秒，请保持面板打开。');
+    var ok = await confirmBox('确认开启保护？\n\n会拉起 4 个保护进程，并做一次内存整理，约 30 秒，请保持面板打开。\n\n技术细节：对 Launcher 提权，息屏时执行内存整理。');
     if (!ok) return;
-    if (!busyOn('启动守护并优化')) return;
-    showMsg('正在启动守护并执行系统优化…（约 30 秒）', '');
+    if (!busyOn('开启保护')) return;
+    showMsg('正在开启保护并整理内存…（约 30 秒）', '');
     var r = await execCmd('sh ' + BASE + '/service.sh; sleep 3; sh ' + BASE + '/scripts/memtonic.sh optimize', 60000);
     busyOff();
     var out = (r.stdout || '').trim() || (r.stderr || '').trim();
@@ -556,10 +801,10 @@
     refresh();
   }
   async function doStop(){
-    var ok = await confirmBox('确认停止守护？\n\n所有守护子进程将退出；已做的调度提权、降权与核亲和约束均会无损还原（FR-RN1 降权状态同步清场）。停止期间不再有任何护航。');
+    var ok = await confirmBox('确认暂停保护？\n\n所有保护会停下，之前做过的优先级调整会全部还原，期间不再护航。\n\n技术细节：降权与核亲和约束均会无损还原（FR-RN1 降权状态同步清场）。');
     if (!ok) return;
-    if (!busyOn('停止守护')) return;
-    showMsg('正在停止守护并还原调度…', '');
+    if (!busyOn('暂停保护')) return;
+    showMsg('正在暂停保护并还原调整…', '');
     var r = await execCmd('sh ' + BASE + '/scripts/memtonic.sh stop', 30000);
     busyOff();
     var out = (r.stdout || '').trim() || (r.stderr || '').trim();
@@ -573,17 +818,17 @@
 
   // ---------- 5b. P2: 重启守护（全量清场 + service.sh 幂等拉起；不调用阻塞式 restart） ----------
   async function doRestart(){
-    var ok = await confirmBox('确认重启守护？\n\n将执行全量清场并重启四守护：调度提权、降权与核亲和约束均会无损还原，FR-RN1 状态档由启动自愈处理；期间约 5-10 秒无护航。\n\n⚠ 24h A/B 基线期重启守护会污染基线，仅在必要时使用。\n\n失败兜底：若重启后显示「已停止」，请点「启动守护并优化」恢复。');
+    var ok = await confirmBox('确认重新启动保护？\n\n会先全部停下再拉起，约 5-10 秒没有护航；之前做过的调整会无损还原。\n\n⚠ 24h A/B 基线期重启守护会污染基线，仅在必要时使用。\n\n失败兜底：若重启后显示「已停止」，请点「开启保护」恢复。');
     if (!ok) return;
-    if (!busyOn('重启守护')) return;
-    showMsg('正在全量清场并重启守护…（约 10 秒）', '');
+    if (!busyOn('重新启动保护')) return;
+    showMsg('正在重新启动保护…（约 10 秒）', '');
     var r = await execCmd('sh ' + BASE + '/scripts/memtonic.sh stop; sleep 2; sh ' + BASE + '/service.sh; sleep 6; cat ' + BASE + '/run/memtonic.pid 2>/dev/null', 60000);
     busyOff();
     var out = (r.stdout || '').trim() || (r.stderr || '').trim();
     if (r.errno === 0 && out){
-      showMsg('守护已重启（pid ' + out.split(':')[0] + '）。请确认下方状态为「运行中」。', 'ok');
+      showMsg('保护已重新启动。请确认上方状态是「运行中」。', 'ok');
     } else {
-      showMsg((out || ('执行失败（errno=' + r.errno + '）')) + ' —— 若守护未恢复，请点「启动守护并优化」', 'err');
+      showMsg((out || ('执行失败（errno=' + r.errno + '）')) + ' —— 若没恢复，请点「开启保护」', 'err');
     }
     refresh();
   }
@@ -599,8 +844,19 @@
     }
   }
   document.addEventListener('click', function(ev){
+    if (ev.target && ev.target.id === 'imask'){ document.getElementById('imask').className = ''; return; }
     var el = ev.target;
     while (el && el !== document.body){
+      if (el.getAttribute && el.getAttribute('data-info-close')){
+        document.getElementById('imask').className = '';
+        return;
+      }
+      if (el.getAttribute && el.getAttribute('data-info')){
+        if (ev.preventDefault) ev.preventDefault();
+        if (ev.stopPropagation) ev.stopPropagation();
+        infoBox(el.getAttribute('data-info'));
+        return;
+      }
       if (el.getAttribute && el.getAttribute('data-act')){
         onAction(el.getAttribute('data-act'));
         return;
