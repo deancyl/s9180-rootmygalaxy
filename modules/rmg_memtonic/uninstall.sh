@@ -36,6 +36,17 @@ fi
 . "$MODDIR/scripts/mt_lib.sh" 2>/dev/null
 flush_guard_restore 2>/dev/null
 bt2_guard_restore 2>/dev/null
+# v1.13.16 B0: 卸载同样补全 kill -9 跳过的清场（GC 提权 / 相机亲和 / 核亲和）
+gc_boost_off 2>/dev/null
+camera_affinity_off 2>/dev/null
+if [ -s "$MODDIR/run/affinity_constrained.lst" ]; then
+  while read -r _ap _apkg _aorig; do
+    case "$_ap" in ''|*[!0-9]*) continue;; esac
+    case "$_aorig" in ''|*[!a-zA-Z0-9_-]*) continue;; esac
+    [ -d "/proc/$_ap" ] || continue
+    echo "$_ap" > "/dev/cpuset/$_aorig/tasks" 2>/dev/null
+  done < "$MODDIR/run/affinity_constrained.lst"
+fi
 
 
 # 3. 删除运行时文件与历史遗留

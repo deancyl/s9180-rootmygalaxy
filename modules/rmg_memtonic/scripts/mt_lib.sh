@@ -39,7 +39,7 @@ MODDIR="${SCRIPT_DIR%/*}"
 RUN=$MODDIR/run          # 运行时私有目录（root 700）
 LOG=$RUN/memtonic.log    # 审计日志（超 512KB 字节基准截断，v1.13.0: 256KB→512KB 保住更长取证窗口）
 MODULE_PROP=$MODDIR/module.prop  # v1.11.0: 模块声明文件（卡片描述动态统计的写入目标）
-MT_VERSION=v1.13.15              # v1.13.13: 模块版本（与 module.prop 同步，动态描述引用）
+MT_VERSION=v1.13.17              # v1.13.13: 模块版本（与 module.prop 同步，动态描述引用）
 
 # v1.13.6 (F2): notify_alert <类型> <文本> —— 关键告警推送 Android 通知。
 # 通道实测（10-29 16:00）：root shell `cmd notification post` exit=0 可达用户 0。
@@ -213,7 +213,19 @@ is_app_uid() {
 }
 
 # nice_of <pid或tid>：/proc/<t>/stat 第 19 字段
-nice_of() { awk '{print $19}' /proc/$1/stat 2>/dev/null; }
+nice_of() {
+  # v1.13.16 B1: 零 fork 读 /proc/<pid>/stat 的 nice（原 awk 子进程在换页风暴下单次
+  # 可达 5-10ms，一次 renice 循环几十次即数百 ms）。字段布局：pid (comm) state ...，
+  # comm 可能含空格与括号 → 用最后一个 ") " 之后切分；去掉 pid+comm 后 nice 是第 17 个。
+  [ -r "/proc/$1/stat" ] || { echo ""; return 1; }
+  IFS= read -r _ns < "/proc/$1/stat" 2>/dev/null || { echo ""; return 1; }
+  _nr=${_ns##*) }
+  [ -n "$_nr" ] || { echo ""; return 1; }
+  set -- $_nr
+  case "${17:-}" in ''|*[!0-9-]*) echo ""; return 1;; esac
+  echo "${17}"
+  return 0
+}
 
 # now_ms：毫秒时间戳（/proc/uptime 小数点后两位）
 now_ms() { awk '{printf "%d", $1*1000}' /proc/uptime 2>/dev/null; }
@@ -235,7 +247,9 @@ focused_pkg() {
 # v1.5.0: is_foreground_service <pid>：动态前台服务豁免判定（极速只读内核接口）
 # oom_score_adj <= 200 为 Android 前台服务/可感知服务（音乐后台、录音、蓝牙穿戴等）
 is_foreground_service() {
-  adj=$(cat /proc/$1/oom_score_adj 2>/dev/null)
+  # v1.13.16 B1: 零 fork（原 cat 子进程；削峰循环里每 pid 一次）
+  adj=""
+  [ -r "/proc/$1/oom_score_adj" ] && IFS= read -r adj < "/proc/$1/oom_score_adj" 2>/dev/null
   case "$adj" in ''|*[!0-9-]*) return 1;; esac
   [ "$adj" -le 200 ] && return 0
   return 1
@@ -677,6 +691,8 @@ SS_DC_HOUR_MAX=6              # 1 小时最多 6 次
 # 定期到点但内存无显著变化时跳过，把 98 次/天 降到 10–20 次。
 SS_PROBE_SKIP_KB=30720        # RSS 变化阈值 30MB
 SS_LAST_RSS=$RUN/ss_probe_rss.kb
+SS_RSS_TICK=$RUN/ss_probe_rss_tick.kb   # v1.13.16 B5: 上一 tick 的 RSS（短时斜率）
+SS_RSS_RISE_KB=10240          # v1.13.16 B5: 单 tick（~60s）涨 10MB 即视为值得探测
 # v1.13.15 A-3: 堆快照限流——实测 275 个/天（设计 144），628 个 inode。
 # 非危机态每小时最多 1 个；危机态（≥470MB）不受限，保证 OOM 现场不丢；自动清 7 天前。
 SS_SNAP_COOL=3600
@@ -851,6 +867,13 @@ ss_health_probe() {
         esac
       fi
       if [ "$_lr" -gt 0 ] && [ "$_dr" -lt "$SS_PROBE_SKIP_KB" ] && [ "$_hp" -eq 0 ]; then _worth=0; fi
+      # v1.13.16 B5: 短时斜率兜底——单 tick 涨 >10MB 也算值得探测，
+      # 覆盖"堆缓慢上涨但 |ΔRSS| 未达 30MB"的场景（否则会漏掉爬升尾段）
+      _rt=0
+      [ -r "$SS_RSS_TICK" ] && IFS= read -r _rt < "$SS_RSS_TICK" 2>/dev/null
+      case "$_rt" in ''|*[!0-9]*) _rt=0;; esac
+      if [ "$_rt" -gt 0 ] && [ $((_rss - _rt)) -ge "$SS_RSS_RISE_KB" ]; then _worth=1; fi
+      echo "$_rss" > "$SS_RSS_TICK" 2>/dev/null
     fi
     if [ "$_worth" = "1" ]; then
       echo "$_now" > "$SS_PROBE_TS" 2>/dev/null

@@ -2,6 +2,44 @@
 
 ---
 
+## [v1.13.17] - 2026-11-08
+
+> v1.13.16 的 FR-RN1 验收暴露出**真正的瓶颈不是"读"而是"写"**：即使已把 Tgid 校验、`oom_score_adj` 探针、`pidof|awk` 全部零 fork 化，移除旁路后 `cpu_scan` 仍达 **1460–3840ms**。根因是降权循环对 181–221 个线程**逐个执行 `renice`**（每次一个 fork），外加每个 tid 一次 `grep -q` 查重与每线程一条日志，合计约 **600 fork/轮**。
+
+### 修复（B1c 批量 renice）
+
+- **`renice` 批量调用**：实机验证 toybox `renice -n N -p pid1 pid2 ...` 支持多 PID（`MULTI_RENICE=OK`）。按 nice 分桶——绝大多数线程为 0，合并为一次 `renice -n 10 -p <全部 tid>`；非 0 的逐个处理（数量极少）。
+- **查重入内存**：`grep -q "^$tid " "$RN_STATE"`（每 tid 一次 fork）改为循环前一次性把已降权 tid 读入 `_known` 字符串，用 shell 模式匹配 `case "$_known" in *" $tid "*)`。
+- **日志合并**：每线程一条 `act=rayneo_thread_demote` 改为每轮一条 `act=rayneo_demote_batch threads=N`。
+- 预期：fork 从 ~600/轮降到 ~5/轮；FR-RN1 在役时 `cpu_scan` 应回落到 300ms 以内。
+
+### 验证
+
+- 单测 **253/253**（新增 3 项 B1c 断言）。
+- FR-RN1 临时启用验收：5 轮 `cpu_scan` 全 <1000ms 才保留启用，否则自动恢复旁路（与 v1.13.16 同一纪律）。
+
+## [v1.13.16] - 2026-11-08
+
+> 阶段 A 审计（v1.13.15 之后、只读）发现两处：① `memtonic.sh stop` 与 `uninstall.sh` 用 `kill -9` 终止子进程，**跳过了子进程的退出清场**，导致 `gc_boost` 提权、相机 provider 亲和、核亲和约束三类改动可能残留到下一次完整重启；② FR-RN1 在役时仍有 **5 处 fork**（Tgid 校验 `awk` ×2、`oom_score_adj` `cat`、`pidof|awk` ×2），是 v1.13.13 验收 0/5 的遗留根因。
+
+### 修复
+
+- **B0 还原完整性**：`stop` 与 `uninstall` 显式补 `gc_boost_off`、`camera_affinity_off`，并按 `affinity_constrained.lst` 逐条把进程写回原 cpuset。此前只还原 rogue / rayneo / camera_vip / bt 四类。
+- **B1 零 fork（5 处）**：
+  - `nice_of()` 改内建读 `/proc/<pid>/stat`（原 `awk`；一次 renice 循环几十次调用，换页风暴下单次 5–10ms）
+  - `is_foreground_service()` 改内建读 `oom_score_adj`（削峰循环每 pid 一次）
+  - `cpu_guard` 两处 Tgid 归属校验改 `while IFS=' ' read`
+  - 眼镜活跃探针 `cat oom_score_adj` 改内建读
+  - 两处 `pidof | awk` 改参数展开 `${var%% *}`
+- **B5 探测门控补强**：新增"单 tick（约 60s）RSS 涨 >10MB 也算值得探测"，覆盖"堆缓慢上涨但 |ΔRSS| 未达 30MB"的漏探场景；抑制态与复测期仍完全不受门控限制。
+
+### 验证与底线
+
+- 单测 **250/250**（新增 9 项 B 阶段断言：stop/uninstall 还原、5 处零 fork、门控补强）。
+- FR-RN1 采用"先旁路部署 → 临时移除 flag 跑 5 轮 → 全绿才正式启用，否则保持旁路"的验收纪律，避免重演 v1.13.13 的 0/5。
+- 底线不变：不杀进程 / 不冻结 / 不动 zram / 不改持久参数 / 不代执行重启 / nice 只提不降。
+- 本次部署需一次守护重启。
+
 ## [v1.13.15] - 2026-11-08
 
 > 源自 11-08 近 5 次部署审计（628 个堆快照覆盖 19 天 + 37.3h 归档日志）。核心发现：**cpu_scan 的 14 次 >1000ms 尖峰（最高 9220ms）全部紧邻 `dumpsys meminfo` 堆探测**，不是扫描本身；堆快照 275 个/天（设计 144）；cpu_scan 占日志行数 32%，把 512KB 历史窗口压到 37 小时。本版为**纯降本**，零功能损失、不改任何阈值语义。

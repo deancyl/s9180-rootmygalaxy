@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# cpu_guard.sh -- RMG MemTonic CPU 失常护栏 + 崩溃雷达（v1.13.15）
+# cpu_guard.sh -- RMG MemTonic CPU 失常护栏 + 崩溃雷达（v1.13.17）
 # v1.13.12 (FR-RN1 hardening): P0/P1 五缺陷修复——
 #   P0-1: rayneo_restore_all/dead-entry 清理逐条 Tgid 归属校验（/proc/<tid>/status 的
 #         Tgid 字段必须等于当前 RayNeo pid；注意 Tgid 不在 stat 文件中——stat 字段 5
@@ -182,10 +182,13 @@ RN_ACTIVE_ADJ_MAX=300                  # v1.13.12(P0-2): top/visible/FGS/percept
 rayneo_restore_all() {
   [ -s "$RN_STATE" ] || return 0
   _rn=0
-  _rnrp=$(pidof "$RAYNEO_PKG" 2>/dev/null | awk '{print $1}')
+  _rnrp=$(pidof "$RAYNEO_PKG" 2>/dev/null); _rnrp=${_rnrp%% *}
   while read -r tid on comm; do
     [ -d "/proc/$tid" ] || continue
-    _tg=$(awk '/^Tgid:/{print $2; exit}' "/proc/$tid/status" 2>/dev/null)
+    _tg=""
+    while IFS=' ' read -r _tk _tv _; do
+      [ "$_tk" = "Tgid:" ] && { _tg=$_tv; break; }
+    done < "/proc/$tid/status" 2>/dev/null
     case "$_tg" in ''|*[!0-9]*) continue ;; esac
     # P0-1: Tgid 归属校验——进程已死（_rnrp 空）或 tid 已复用至其他进程 → 跳过不还原
     { [ -n "$_rnrp" ] && [ "$_tg" = "$_rnrp" ]; } || continue
@@ -216,7 +219,8 @@ rayneo_memo_active() {
 # top=0/visible/FGS perceptible≈100-200/纯后台 cached 900+）。失败安全=漏治理不误伤。
 rayneo_eyewear_active() {
   [ "$_rn_focus" = "$RAYNEO_PKG" ] && return 0
-  _adj=$(cat "/proc/$rpid/oom_score_adj" 2>/dev/null)
+  _adj=""
+  [ -r "/proc/$rpid/oom_score_adj" ] && IFS= read -r _adj < "/proc/$rpid/oom_score_adj" 2>/dev/null
   case "$_adj" in ''|*[!0-9]*) return 1 ;; esac
   [ "$_adj" -le "$RN_ACTIVE_ADJ_MAX" ]
 }
@@ -224,7 +228,7 @@ rayneo_governor() {
   _rn_focus=$1
   _rn_mode=${2:-full}
   if [ -f "$RUN/disable_rayneo_guard" ]; then rayneo_restore_all; return 0; fi
-  rpid=$(pidof "$RAYNEO_PKG" 2>/dev/null | awk '{print $1}')
+  rpid=$(pidof "$RAYNEO_PKG" 2>/dev/null); rpid=${rpid%% *}
   if [ -z "$rpid" ]; then rayneo_restore_all; return 0; fi
   if rayneo_memo_active; then rayneo_restore_all; return 0; fi
   if rayneo_eyewear_active; then rayneo_restore_all; return 0; fi
@@ -233,7 +237,10 @@ rayneo_governor() {
     while read -r tid on comm; do
       if [ -d "/proc/$tid" ]; then
         # P0-1: 死条目清理同样带 Tgid 归属校验
-        _tg=$(awk '/^Tgid:/{print $2; exit}' "/proc/$tid/status" 2>/dev/null)
+        _tg=""
+        while IFS=' ' read -r _tk _tv _; do
+          [ "$_tk" = "Tgid:" ] && { _tg=$_tv; break; }
+        done < "/proc/$tid/status" 2>/dev/null
         [ "$_tg" = "$rpid" ] && echo "$tid $on $comm" >> "$_rntmp" 2>/dev/null
       fi
     done < "$RN_STATE"
@@ -241,6 +248,15 @@ rayneo_governor() {
   fi
   [ "$_rn_mode" = "storm" ] && return 0   # P1-3: 风暴期止步——还原/清理可达，不新增降权
   _rn_new=0
+  # v1.13.16 B1c: 已降权 tid 入内存（原 `grep -q "^$tid " RN_STATE` 每个 tid 一次 = 200 fork/轮）
+  _known=" "
+  if [ -s "$RN_STATE" ]; then
+    while read -r _kt _ko _kc; do
+      case "$_kt" in ''|*[!0-9]*) continue;; esac
+      _known="$_known$_kt "
+    done < "$RN_STATE"
+  fi
+  _b0=""; _bx=""
   for t in /proc/$rpid/task/*; do
     tid=${t##*/}
     IFS= read -r comm < "$t/comm" 2>/dev/null || continue   # v1.13.13: 零 fork（原 cat 子进程）
@@ -248,15 +264,26 @@ rayneo_governor() {
       *raster*|pool-*|DefaultDispatch*|DartWorker*|DefaultExecutor*|AMap*) ;;
       *) continue ;;
     esac
-    grep -q "^$tid " "$RN_STATE" 2>/dev/null && continue
+    case "$_known" in *" $tid "*) continue;; esac
     on=$(nice_of "$tid"); case "$on" in ''|*[!0-9-]*) continue;; esac
     [ "$on" -le -10 ] && continue
     [ "$on" -ge "$RAYNEO_TARGET_NICE" ] && continue
-    renice -n $((RAYNEO_TARGET_NICE - on)) -p "$tid" >/dev/null 2>&1 || continue
     echo "$tid $on $comm" >> "$RN_STATE" 2>/dev/null
-    logx I "act=rayneo_thread_demote tid=$tid comm=$comm nice=$on→10 msg=全天智记后台渲染池线程降权_音频与VAD不碰"
     _rn_new=$((_rn_new+1))
+    # 分桶：nice=0 的合并批量（绝大多数），其余逐个（极少）
+    if [ "$on" -eq 0 ]; then _b0="$_b0 $tid"; else _bx="$_bx $tid:$on"; fi
   done
+  # v1.13.16 B1c: 批量 renice——toybox renice 支持多 PID（实机验证 OK）
+  if [ -n "$_b0" ]; then
+    renice -n "$RAYNEO_TARGET_NICE" -p $_b0 >/dev/null 2>&1
+  fi
+  for _e in $_bx; do
+    _bt=${_e%%:*}; _bo=${_e##*:}
+    renice -n $((RAYNEO_TARGET_NICE - _bo)) -p "$_bt" >/dev/null 2>&1
+  done
+  if [ "$_rn_new" -gt 0 ]; then
+    logx I "act=rayneo_demote_batch threads=$_rn_new nice_target=$RAYNEO_TARGET_NICE msg=后台渲染池线程批量降权_音频与VAD不碰"
+  fi
   if [ "$_rn_new" -gt 0 ] && [ ! -f "$RUN/rayneo_notified" ]; then
     touch "$RUN/rayneo_notified" 2>/dev/null
     notify_alert rayneo "MemTonic: 雷鸟全天智记后台渲染线程已降权省电（memo功能不受影响，切回前台自动还原）"

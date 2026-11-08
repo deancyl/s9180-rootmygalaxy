@@ -223,6 +223,19 @@ stop)
 
   # v1.5.1: 护栏被 kill -9 强杀，主动兜底还原风暴降权
   storm_restore_pending manual_stop
+  # v1.13.16 B0: 补全 kill -9 跳过的清场——GC 提权 / 相机 provider 亲和 / 核亲和约束
+  # （原 stop 只还原 rogue / rayneo / camera_vip / bt，这三类会残留到重启）
+  gc_boost_off 2>/dev/null
+  camera_affinity_off 2>/dev/null
+  if [ -s "$RUN/affinity_constrained.lst" ]; then
+    while read -r _ap _apkg _aorig; do
+      case "$_ap" in ''|*[!0-9]*) continue;; esac
+      case "$_aorig" in ''|*[!a-zA-Z0-9_-]*) continue;; esac
+      [ -d "/proc/$_ap" ] || continue
+      echo "$_ap" > "/dev/cpuset/$_aorig/tasks" 2>/dev/null
+    done < "$RUN/affinity_constrained.lst"
+    rm -f "$RUN/affinity_constrained.lst" 2>/dev/null
+  fi
   # v1.6.0: 还原 CPU 失常护栏降权（cpu_guard 被强杀前来不及自清场）
   if [ -s "$RUN/cpu_rogue_renice.lst" ]; then
     while read -r tid on pkg; do
@@ -300,7 +313,7 @@ if [ -n "$_existing" ] && [ -d "/proc/$_existing" ] && grep -q memtonic /proc/$_
 fi
 check_root_liveness
 echo "$$:$(pid_starttime $$)" > "$PIDF"
-logx E "event=start ver=1.13.15 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
+logx E "event=start ver=1.13.17 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
 # v1.13.4: 启动善后横幅（P2）——上次会话异常中断检测 + boot reason + rescue 计数
 boot_postmortem
 
