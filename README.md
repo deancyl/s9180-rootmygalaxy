@@ -27,7 +27,7 @@ MemTonic 是**配套本仓库临时 root 环境使用**的 KernelSU 模块：软
 |---|---|---|
 | [`v1.13.18`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.18) | **当前最新**：**FR-RN1 雷鸟治理首次成功启用**（根因是逐线程 renice ≈600 fork/轮，改按 nice 分桶批量调用后 cpu_scan 340–730ms，历史为 1770–13010ms）+ WebUI **健康分首屏**（可用/堆/swap/PSI/CPU-PSI 综合 0–100 分 + 一句人话）+ 折叠区 6→4 | **新装首选** |
 | [`v1.13.17`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.17) | FR-RN1 批量 renice（首次通过 5 轮验收）；含 v1.13.16 的 stop/uninstall 还原完整性与零 fork 化（二者同一提交） | 稳定保守选择 |
-| [`v1.13.15`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.15) | 审计后**纯降本**——堆探测门控（RSS 变化 <30MB 且 mem PSI <5% 时跳过 `dumpsys`，消除 9s 级扫描尖峰）、扫描日志降频、堆快照限流（危机态不限、保留 OOM 现场）、护航复用前台采样；零功能损失、阈值语义不变 | **新装首选** |
+| [`v1.13.15`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.15) | 审计后**纯降本**——堆探测门控（RSS 变化 <30MB 且 mem PSI <5% 时跳过 `dumpsys`，消除 9s 级扫描尖峰）、扫描日志降频、堆快照限流（危机态不限、保留 OOM 现场）、护航复用前台采样；零功能损失、阈值语义不变 | 历史存档 |
 | [`v1.13.14`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.14) | FR-SS 六项硬化——`am` 失败后走内核 `drop_caches` 兜底、阈值前移 430/450/460/470/480MB、GC 提权 -15 + 绑大核、连续 3 点趋势判定、抑制态极限压制；WebUI flag 时效化 + ⓘ 弹层 + CSS 误伤修复 | 历史存档 |
 | [`v1.13.13`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.13) | FR-RN1 零 fork 修复（`cpu_scan` 1770–13010ms → 210–220ms 的 A/B 铁证）、WebUI P2 四项、雷鸟语音链路削峰豁免（`act=voice_asr_skip`）；验收 0/5 后自动回滚旁路 flag | 需要 P2 联网诊断/语音链路治理者 |
 | [`v1.13.12`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.12) | FR-RN1 雷鸟治理五缺陷（Tgid 归属校验 / `oom_score_adj≤300` 判活 / 风暴期可达 / 双路径清场 / memo 门控）+ WebUI P0/P1 一致性 | 稳定保守选择 |
@@ -59,8 +59,11 @@ MemTonic 是**配套本仓库临时 root 环境使用**的 KernelSU 模块：软
 |---|---|
 | 安装与升级、常见问题、版本记录、安全边界与工作原理 | [`docs/wiki/`](docs/wiki/)（Wiki 源文件，5 页） |
 | 逐版本完整变更 | [`modules/rmg_memtonic/CHANGELOG.md`](modules/rmg_memtonic/CHANGELOG.md) |
+| 各版本 Release 正文归档 | [`docs/releases/`](docs/releases/)（线上正文导出，v1.13.12 起共 6 份） |
 | 开发进度快照 | [`docs/progress/`](docs/progress/) |
 | 事故取证与分析报告 | [`docs/analysis/`](docs/analysis/) |
+| v1.13.16 开发与部署方案（需求 / 已知问题 / 风险 / 验证矩阵） | [`docs/analysis/MemTonic_v1.13.16_开发部署方案_2026-11-08.md`](docs/analysis/MemTonic_v1.13.16_开发部署方案_2026-11-08.md) |
+| 2026-11-08 进度同步核查（Latest 修正、代码指纹、未闭环项） | [`docs/progress/2026-11-08-sync-checkpoint.md`](docs/progress/2026-11-08-sync-checkpoint.md) |
 
 > **关于 GitHub Wiki**：本仓库 Wiki 尚未在网页端初始化（GitHub 要求先手动创建首页，之后才能 `git push`）。页面内容已版本化在 `docs/wiki/`；初始化后运行 [`docs/wiki/sync.sh`](docs/wiki/sync.sh) 即可一键同步（文件名与页面名一一对应）。
 
@@ -92,7 +95,7 @@ MemTonic 是**配套本仓库临时 root 环境使用**的 KernelSU 模块：软
 
 1. 下载 Release 中的 APK，安装（需允许安装未知来源应用）
 2. 打开 App，按界面提示触发临时 root
-3. 打开 KernelSU Manager（v3.3.0 变体请使用 [KernelSU v3.3.0 Manager](https://github.com/ReSukiSU/KernelSU/releases)）确认状态为「工作中」
+3. 打开 KernelSU Manager 确认状态为「工作中」；**Manager 版本必须与 APK 内嵌 ksud 一致**：`v0.2.36-ksu331` 配 KernelSU **v3.3.1 / 驱动 32680**，`v0.2.36-ksu330` 配 **v3.3.0 / 32601**，`v0.2.36-fzg1` 配 **v3.2.5**；版本不匹配会导致管理器无法识别（[KernelSU releases](https://github.com/ReSukiSU/KernelSU/releases)）
 4. **重启后 root 失效**，需要时重新打开 App 再跑一次即可
 
 ## 🧾 校验和
@@ -139,7 +142,7 @@ s9180-rootmygalaxy/
 ├── README.md                                    ← 本文件
 ├── LICENSE                                      ← GPL-3.0（KernelSU 衍生代码）
 ├── modules/
-│   └── rmg_memtonic/                            ← MemTonic 内存守护模块（当前主干 v1.10.0）
+│   └── rmg_memtonic/                            ← MemTonic 内存守护模块（当前主干 v1.13.18 / vc58）
 │       启动风暴护栏 + CPU 失常护栏 + 前台护盾 + Camera/Screenshot Sentinel +
 │       Rollback 地雷排除哨兵 + 结构化日志；版本历史见上方 Releases，
 │       完整变更记录见 modules/rmg_memtonic/CHANGELOG.md

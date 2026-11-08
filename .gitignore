@@ -1,0 +1,4 @@
+# Local release-build cache and binary reference archives.
+# These are regenerated locally and already published as GitHub Release assets.
+/.zipref/
+/*.zip
