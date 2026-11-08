@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# cpu_guard.sh -- RMG MemTonic CPU 失常护栏 + 崩溃雷达（v1.13.17）
+# cpu_guard.sh -- RMG MemTonic CPU 失常护栏 + 崩溃雷达（v1.13.18）
 # v1.13.12 (FR-RN1 hardening): P0/P1 五缺陷修复——
 #   P0-1: rayneo_restore_all/dead-entry 清理逐条 Tgid 归属校验（/proc/<tid>/status 的
 #         Tgid 字段必须等于当前 RayNeo pid；注意 Tgid 不在 stat 文件中——stat 字段 5

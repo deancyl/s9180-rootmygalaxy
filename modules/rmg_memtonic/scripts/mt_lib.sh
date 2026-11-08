@@ -39,7 +39,7 @@ MODDIR="${SCRIPT_DIR%/*}"
 RUN=$MODDIR/run          # 运行时私有目录（root 700）
 LOG=$RUN/memtonic.log    # 审计日志（超 512KB 字节基准截断，v1.13.0: 256KB→512KB 保住更长取证窗口）
 MODULE_PROP=$MODDIR/module.prop  # v1.11.0: 模块声明文件（卡片描述动态统计的写入目标）
-MT_VERSION=v1.13.17              # v1.13.13: 模块版本（与 module.prop 同步，动态描述引用）
+MT_VERSION=v1.13.18              # v1.13.13: 模块版本（与 module.prop 同步，动态描述引用）
 
 # v1.13.6 (F2): notify_alert <类型> <文本> —— 关键告警推送 Android 通知。
 # 通道实测（10-29 16:00）：root shell `cmd notification post` exit=0 可达用户 0。
@@ -1478,7 +1478,22 @@ collect_stats() {
   done
   psi_mem_read || P_S10=NA P_F10=NA
   _st_ssheap=$(cat "$SS_HEAP_KB_FILE" 2>/dev/null); case "$_st_ssheap" in ''|*[!0-9]*) _st_ssheap=NA;; esac
-  echo "state=$_st_state pid=${_st_pid:-NA} shield=$_st_shield storm=$_st_storm rogue=$_st_rogue compact=$_st_compact blackbox=$_st_blackbox crash=$_st_crash rollback=$_st_rollback mjburst=$_st_mjburst bt=$_st_bt ssheap=$_st_ssheap flush=$_st_flush gcboost=$_st_gcboost ssprobe=$_st_ssprobe forecast=$_st_forecast bt3=$_st_bt3 avail_kb=$(avail_kb) psi_s10=${P_S10:-NA} psi_f10=${P_F10:-NA}"
+  # v1.13.18: 整机内存字段（零 fork）——WebUI 健康分需要，而不只是堆
+  _st_st=0; _st_sf=0
+  while IFS=' ' read -r _mk _mv _; do
+    case "$_mk" in
+      SwapTotal:) _st_st=$_mv ;;
+      SwapFree:) _st_sf=$_mv; break ;;
+    esac
+  done < /proc/meminfo 2>/dev/null
+  case "$_st_st" in ''|*[!0-9]*) _st_st=0;; esac
+  case "$_st_sf" in ''|*[!0-9]*) _st_sf=0;; esac
+  _st_cpsi="NA"
+  if [ -r /proc/pressure/cpu ]; then
+    IFS=' ' read -r _pc1 _pc2 _ < /proc/pressure/cpu 2>/dev/null
+    case "$_pc2" in avg10=*) _st_cpsi=${_pc2#avg10=} ;; esac
+  fi
+  echo "state=$_st_state pid=${_st_pid:-NA} shield=$_st_shield storm=$_st_storm rogue=$_st_rogue compact=$_st_compact blackbox=$_st_blackbox crash=$_st_crash rollback=$_st_rollback mjburst=$_st_mjburst bt=$_st_bt ssheap=$_st_ssheap flush=$_st_flush gcboost=$_st_gcboost ssprobe=$_st_ssprobe forecast=$_st_forecast bt3=$_st_bt3 avail_kb=$(avail_kb) psi_s10=${P_S10:-NA} psi_f10=${P_F10:-NA} swap_total_kb=$_st_st swap_free_kb=$_st_sf cpu_psi_s10=$_st_cpsi"
 }
 
 # v1.11.0: update_module_desc —— 动态刷新 module.prop description（KSU 管理器卡片简统计）

@@ -108,6 +108,18 @@
   .snaprow span:last-child{overflow-wrap:anywhere}
   .empty{font-size:12px;color:var(--tx3);padding:6px 0}
   .advbtns .oprow>button{min-height:40px;font-size:12.5px}
+  /* v1.13.18 C: 健康分首屏（把"整机内存"而非"只有堆"摆在第一屏） */
+  .scorecard{padding:14px 14px 12px}
+  .scorehead{display:flex;align-items:center;gap:12px}
+  .scoreval{font-size:32px;font-weight:800;line-height:1;min-width:62px;text-align:center;font-variant-numeric:tabular-nums}
+  .scoreval.ok{color:var(--ok)} .scoreval.warn{color:var(--warn)}
+  .scoreval.bad{color:#fb923c} .scoreval.err{color:var(--err)}
+  .scoretext{min-width:0}
+  .scoretext b{font-size:14px}
+  .scoresub{font-size:12px;color:var(--tx2);margin-top:3px;line-height:1.45}
+  .scoregrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+  .scoregrid>div{background:var(--card2);border-radius:8px;padding:7px 9px;min-width:0}
+  .scoregrid b{display:block;font-size:14px;margin-top:1px}
   /* UI-R2: 状态胶囊 + ⓘ 信息弹层 */
   .chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 6px}
   .chip{display:inline-flex;align-items:center;gap:5px;background:var(--card);border:1px solid var(--line);border-radius:999px;padding:5px 9px;font-size:12px;color:var(--tx2);line-height:1.2}
@@ -151,32 +163,32 @@
   <div class="list" id="e_txt" style="color:var(--err)"></div>
 </div>
 
-<div class="metrics">
-  <div class="metric">
-    <div class="mlabel">可用内存</div>
-    <div class="mval" id="st_avail">--</div>
-    <div class="bar"><i id="psi_bar" style="width:0%;background:var(--ok)"></i></div>
-    <div class="msub">内存压力 <span id="st_psi">--</span> <button type="button" class="ib" data-info="psi">i</button></div>
-  </div>
-  <div class="metric">
-    <div class="mlabel">已做的保护</div>
-    <div class="mval" id="metric_events">--</div>
-    <div class="msub" id="metric_events_detail">14 类保护里，有几类今天动过</div>
-  </div>
-  <div class="metric full">
-    <div class="mlabel">系统核心内存 <button type="button" class="ib" data-info="heap">i</button></div>
-    <div class="mval mono" id="st_heap">--</div>
-    <div class="heapbar">
-      <i id="heap_bar" style="width:0%;background:var(--ok)"></i>
-      <span class="tick" style="left:90.7%"></span>
-      <span class="tick" style="left:92.7%"></span>
-      <span class="tick" style="left:94.8%"></span>
+<div class="card scorecard">
+  <div class="scorehead">
+    <div class="scoreval" id="h_score">--</div>
+    <div class="scoretext">
+      <b id="h_verdict">读取中</b>
+      <div class="scoresub" id="h_advice">正在读取设备状态…</div>
     </div>
-    <div class="ticks" style="height:auto;display:flex;justify-content:space-between;font-size:10px;margin-top:6px">
-      <span>0</span><span style="color:var(--warn)">450 清理</span><span style="color:#fb923c">460 加速</span><span style="color:var(--err)">470 告警</span><span style="color:var(--err)">496 危险</span>
-    </div>
-    <div class="msub" id="st_heap_band">--</div>
   </div>
+  <div class="scoregrid">
+    <div><span class="mlabel">可用内存</span><b id="st_avail">--</b></div>
+    <div><span class="mlabel">系统核心内存</span><b id="st_heap">--</b></div>
+    <div><span class="mlabel">交换已用</span><b id="st_swap">--</b></div>
+    <div><span class="mlabel">CPU 压力</span><b id="st_cpu_psi">--</b></div>
+  </div>
+  <div class="heapbar">
+    <i id="heap_bar" style="width:0%;background:var(--ok)"></i>
+    <span class="tick" style="left:90.7%"></span>
+    <span class="tick" style="left:92.7%"></span>
+    <span class="tick" style="left:94.8%"></span>
+  </div>
+  <div class="ticks" style="height:auto;display:flex;justify-content:space-between;font-size:10px;margin-top:6px">
+    <span>0</span><span style="color:var(--warn)">450 清理</span><span style="color:#fb923c">460 加速</span><span style="color:var(--err)">470 告警</span><span style="color:var(--err)">496 危险</span>
+  </div>
+  <div class="msub" id="st_heap_band">--</div>
+  <div class="bar"><i id="psi_bar" style="width:0%;background:var(--ok)"></i></div>
+  <div class="msub">mem PSI <span id="st_psi">--</span> · 保护动作 <span id="metric_events">--</span> <span id="metric_events_detail">--</span></div>
 </div>
 
 <div class="quick">
@@ -188,21 +200,13 @@
 </div>
 
 <details class="fold">
-  <summary>内存细节</summary>
+  <summary>内存与保护 · <span id="card_summary">14 类</span></summary>
   <div class="foldbody">
-    <div class="foldhint">上面那条内存条的详细读数 <button type="button" class="ib" data-info="crisis">i</button></div>
+    <div class="foldhint">内存细节与 14 类保护计数 <button type="button" class="ib" data-info="crisis">i</button></div>
     <div class="kvrow"><span class="k">回收加速 / 清理失败</span><b id="st_gc_relief" class="mono">--</b></div>
     <div class="kvrow"><span class="k">重启建议 / 提前预警</span><b id="st_advise_forecast" class="mono">--</b></div>
     <div class="kvrow"><span class="k">最近检查 / 最近内存吃紧</span><b id="st_probe_paging" class="mono" style="font-size:11px;font-weight:500">--</b></div>
-    <div class="hint">这些数字来自系统实时读数；日志超过 512KB 会重新开始计数。</div>
-  </div>
-</details>
-
-<details class="fold">
-  <summary>保护记录 · <span id="card_summary">14 类</span></summary>
-  <div class="foldbody">
-    <div class="foldhint">14 类保护各自做了多少次 <button type="button" class="ib" data-info="counts">i</button></div>
-    <div class="grid" id="cards"></div>
+    <div class="grid" id="cards" style="margin-top:10px"></div>
     <details class="more" style="margin-top:8px"><summary>每一类具体管什么</summary><div id="card_explain"></div></details>
     <div class="hint" id="logcycle">数字从本次日志周期开始累计；日志超过 512KB 会清零重算。管理器里的数字可能比这里慢一次刷新，以本页「数据更新时间」为准。</div>
   </div>
@@ -216,7 +220,7 @@
     <div class="kvrow"><span class="k">未完成的更新回滚</span><b id="st_rollback" class="mono">--</b></div>
     <div class="kvrow"><span class="k">系统异常记录（累计 / 最近）</span><b id="st_hal" class="mono" style="font-size:12px">--</b></div>
     <div class="kvrow"><span class="k">关于重启</span><span class="t" style="max-width:64%;text-align:right;line-height:1.35">只能由你手动决定；先确认没有未完成的更新回滚</span></div>
-    <div class="hint">模块只看系统状态、调线程优先级；重启、拆回滚、停止应用都不会由它发起。系统异常记录是历史累计，多数不致命。</div>
+    <div class="hint">模块只看系统状态、调线程优先级；重启、拆回滚、停止应用都不会由它发起。系统异常记录是历史累计，多数不致命。<br>不会杀应用、不会冻结应用、不改系统设置、不刷写任何分区；所有优先级调整（提权与降权）都逐个线程记录、随时可还原；软重启是倒数第二手段，模块绝不代执行，须由您手动判断。</div>
   </div>
 </details>
 
@@ -259,14 +263,6 @@
     </div>
     <div id="msg"></div>
     <div class="hint">暂停 / 重启会短暂中断护航，且重启守护会污染 24h A/B 基线，仅在必要时使用。</div>
-  </div>
-</details>
-
-<details class="fold">
-  <summary>这个模块不会做什么</summary>
-  <div class="foldbody">
-    <div class="foldhint">完整技术口径 <button type="button" class="ib" data-info="safety">i</button></div>
-    <div class="hint">不会杀应用、不会冻结应用、不改系统设置、不刷写任何分区；所有优先级调整（提权与降权）都逐个线程记录、随时可还原；前台应用与相机优先，蓝牙音频、正在播放的应用、微信消息都不受影响；软重启是倒数第二手段，模块绝不代执行，须由您手动判断。</div>
   </div>
 </details>
 
@@ -600,6 +596,30 @@
     if (age === undefined || age === null || age < 0) return true;
     return age <= maxSec;
   }
+  // v1.13.18 C-1: 健康分——用「整机内存」综合评估（可用/堆/swap/PSI/CPU PSI），
+  // 而不是只看堆：实测出现「堆 223MB 正常但物理内存 99.3% 用满」，只看堆会误判健康。
+  function healthScore(kv){
+    var s = 100;
+    var availMB = Math.round(int0(kv.avail_kb)/1024);
+    var heapMB = Math.round(int0(kv.ssheap)/1024);
+    var st = int0(kv.swap_total_kb), sf = int0(kv.swap_free_kb);
+    var swapUsedMB = st > 0 ? Math.round((st - sf)/1024) : 0;
+    var psi = parseFloat(kv.psi_s10); if (isNaN(psi)) psi = 0;
+    var cpsi = parseFloat(kv.cpu_psi_s10); if (isNaN(cpsi)) cpsi = 0;
+    if (availMB > 0){ if (availMB < 1500) s -= 30; else if (availMB < 2500) s -= 15; }
+    if (heapMB > 0){ if (heapMB >= 481) s -= 40; else if (heapMB >= 460) s -= 25; else if (heapMB >= 440) s -= 10; }
+    if (swapUsedMB > 6000) s -= 25; else if (swapUsedMB > 4000) s -= 12;
+    if (psi >= 30) s -= 15; else if (psi >= 15) s -= 6;
+    if (cpsi >= 50) s -= 12; else if (cpsi >= 30) s -= 5;
+    if (s < 0) s = 0;
+    return {score:s, availMB:availMB, heapMB:heapMB, swapUsedMB:swapUsedMB, psi:psi, cpsi:cpsi};
+  }
+  function scoreVerdict(s){
+    if (s >= 80) return {k:'ok', t:'状态良好', a:'正常用就行'};
+    if (s >= 60) return {k:'warn', t:'内存偏紧', a:'后台别开太多，卡了清一下'};
+    if (s >= 40) return {k:'bad', t:'内存吃紧', a:'关掉不用的后台应用'};
+    return {k:'err', t:'随时可能卡死', a:'先清后台，别开大应用'};
+  }
   /* @pure-functions-end */
 
   function renderStatus(kv){
@@ -630,6 +650,15 @@
     var bar = document.getElementById('psi_bar');
     bar.style.width = pct + '%';
     bar.style.background = pn >= 30 ? 'var(--err)' : (pn >= 15 ? 'var(--warn)' : 'var(--ok)');
+    // v1.13.18 C-1: 健康分（整机内存视角）
+    var hs = healthScore(kv), vd = scoreVerdict(hs.score);
+    var hEl = document.getElementById('h_score');
+    if (hEl){ hEl.textContent = hs.score; hEl.className = 'scoreval ' + vd.k; }
+    set('h_verdict', vd.t);
+    set('h_advice', vd.a);
+    set('st_swap', hs.swapUsedMB > 0 ? (hs.swapUsedMB/1024).toFixed(1) + ' GB' : '--');
+    var _cp = parseFloat(kv.cpu_psi_s10);
+    set('st_cpu_psi', isNaN(_cp) ? '--' : (kv.cpu_psi_s10 + '%'));
     var nonzero = 0, names = [];
     for (var i=0;i<CARD_DEFS.length;i++){
       var d = CARD_DEFS[i];
