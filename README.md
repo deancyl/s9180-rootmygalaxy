@@ -25,8 +25,10 @@ MemTonic 是**配套本仓库临时 root 环境使用**的 KernelSU 模块：软
 
 | MemTonic | 说明 | 适用人群 |
 |---|---|---|
-| [`v1.13.15`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.15) | **当前最新**：审计后**纯降本**——堆探测门控（RSS 变化 <30MB 且 mem PSI <5% 时跳过 `dumpsys`，消除 9s 级扫描尖峰）、扫描日志降频、堆快照限流（危机态不限、保留 OOM 现场）、护航复用前台采样；零功能损失、阈值语义不变 | **新装首选** |
-| [`v1.13.14`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.14) | FR-SS 六项硬化——`am` 失败后走内核 `drop_caches` 兜底（限流 10min/次、1h≤6）、阈值前移 430/450/460/470/480MB、GC 提权 -15 + 绑大核、连续 3 点趋势判定、抑制态极限压制（60s 探测）；WebUI flag 时效化 + ⓘ 弹层点外部关闭 + CSS 误伤修复 | 稳定保守选择 |
+| [`v1.13.18`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.18) | **当前最新**：**FR-RN1 雷鸟治理首次成功启用**（根因是逐线程 renice ≈600 fork/轮，改按 nice 分桶批量调用后 cpu_scan 340–730ms，历史为 1770–13010ms）+ WebUI **健康分首屏**（可用/堆/swap/PSI/CPU-PSI 综合 0–100 分 + 一句人话）+ 折叠区 6→4 | **新装首选** |
+| [`v1.13.17`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.17) | FR-RN1 批量 renice（首次通过 5 轮验收）；含 v1.13.16 的 stop/uninstall 还原完整性与零 fork 化（二者同一提交） | 稳定保守选择 |
+| [`v1.13.15`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.15) | 审计后**纯降本**——堆探测门控（RSS 变化 <30MB 且 mem PSI <5% 时跳过 `dumpsys`，消除 9s 级扫描尖峰）、扫描日志降频、堆快照限流（危机态不限、保留 OOM 现场）、护航复用前台采样；零功能损失、阈值语义不变 | **新装首选** |
+| [`v1.13.14`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.14) | FR-SS 六项硬化——`am` 失败后走内核 `drop_caches` 兜底、阈值前移 430/450/460/470/480MB、GC 提权 -15 + 绑大核、连续 3 点趋势判定、抑制态极限压制；WebUI flag 时效化 + ⓘ 弹层 + CSS 误伤修复 | 历史存档 |
 | [`v1.13.13`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.13) | FR-RN1 零 fork 修复（`cpu_scan` 1770–13010ms → 210–220ms 的 A/B 铁证）、WebUI P2 四项、雷鸟语音链路削峰豁免（`act=voice_asr_skip`）；验收 0/5 后自动回滚旁路 flag | 需要 P2 联网诊断/语音链路治理者 |
 | [`v1.13.12`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.12) | FR-RN1 雷鸟治理五缺陷（Tgid 归属校验 / `oom_score_adj≤300` 判活 / 风暴期可达 / 双路径清场 / memo 门控）+ WebUI P0/P1 一致性 | 稳定保守选择 |
 | [`memtonic-v1.11.0`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.11.0) | 状态可视化：卡片动态统计 + WebUI 状态面板 | 历史存档 |
