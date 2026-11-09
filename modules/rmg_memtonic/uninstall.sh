@@ -1,25 +1,32 @@
 #!/system/bin/sh
-# uninstall.sh —— RMG MemTonic v1.9.6 卸载清理
-# 停止守护与护栏，还原未处理的 renice 清单，删除运行时文件，
-# 并清理 v1.0.0 时代遗留在 /data/local/tmp 的文件。
+# uninstall.sh —— RMG MemTonic v1.13.19 卸载清理
+# 停止守护与全部子进程，统一还原所有优先级 / 亲和 / 提权改动，删除运行时文件，
+# 并清理早期遗留在 /data/local/tmp 的文件。
 
-MODDIR=$(dirname "$0")
+# v1.13.19: 零 fork 写法（KernelSU 官方规范）——${0%/*} 由 shell 内建完成，不启动 dirname。
+MODDIR=${0%/*}
+[ "$MODDIR" = "$0" ] && MODDIR=/data/adb/modules/rmg_memtonic
 
-# 1. 停止守护与护栏（KILL 兜底）
+# 1. 终止守护与全部子进程
+# v1.13.19: 原实现只遍历 memtonic.pid / guard.pid 两个 pid 文件，cpu_guard.sh、
+# fluency_shield.sh、vk_injector.sh 三个子守护不会被终止；紧随其后的 rm -rf run 又会
+# 删光所有 pid 文件与还原清单 → 孤儿无主、无法再 stop、清单丢失（11-08 审计 P0-1）。
+# 现与 memtonic.sh stop 对齐：pid 文件 + pkill 双保险。
 for pf in "$MODDIR/run/memtonic.pid" \
-          "$MODDIR/run/guard.pid"; do
+          "$MODDIR/run/guard.pid" \
+          "$MODDIR/run/cpuguard.pid" \
+          "$MODDIR/run/fluencyshield.pid"; do
   p=$(cat "$pf" 2>/dev/null); p=${p%%:*}
   if [ -n "$p" ] && [ -d /proc/$p ]; then
-    cmd=$(cat /proc/$p/cmdline 2>/dev/null)
-    case "$cmd" in
-      *memtonic*|*guard*|*shield*)
-        kill "$p" 2>/dev/null
-        sleep 1
-        [ -d /proc/$p ] && kill -9 "$p" 2>/dev/null
-        ;;
-    esac
+    kill "$p" 2>/dev/null
+    sleep 1
+    [ -d /proc/$p ] && kill -9 "$p" 2>/dev/null
   fi
 done
+pkill -9 -f "scripts/cpu_guard.sh" 2>/dev/null
+pkill -9 -f "scripts/fluency_shield.sh" 2>/dev/null
+pkill -9 -f "scripts/storm_guard.sh" 2>/dev/null
+pkill -9 -f "scripts/vk_injector.sh" 2>/dev/null
 
 # 2. 还原清单中尚未还原的 tid（若有）——卸载不能把别的应用留在降优先级状态
 RLST=/data/local/tmp/memtonic_storm_renice.lst
@@ -31,25 +38,17 @@ if [ -s "$RLST" ]; then
   done < "$RLST"
 fi
 
-# Source the runtime constants/files early so flush_guard_restore can find
-# $RUN/flush_guard.bak before the run directory is removed.
+# Source the runtime constants/files early so the restore helpers can find their
+# $RUN/*.bak before the run directory is removed.
 . "$MODDIR/scripts/mt_lib.sh" 2>/dev/null
-flush_guard_restore 2>/dev/null
-bt2_guard_restore 2>/dev/null
-# v1.13.16 B0: 卸载同样补全 kill -9 跳过的清场（GC 提权 / 相机亲和 / 核亲和）
-gc_boost_off 2>/dev/null
-camera_affinity_off 2>/dev/null
-if [ -s "$MODDIR/run/affinity_constrained.lst" ]; then
-  while read -r _ap _apkg _aorig; do
-    case "$_ap" in ''|*[!0-9]*) continue;; esac
-    case "$_aorig" in ''|*[!a-zA-Z0-9_-]*) continue;; esac
-    [ -d "/proc/$_ap" ] || continue
-    echo "$_ap" > "/dev/cpuset/$_aorig/tasks" 2>/dev/null
-  done < "$MODDIR/run/affinity_constrained.lst"
-fi
-
+# v1.13.19: 与 memtonic.sh stop 共用同一份清场序列（storm / flush / bt / bt2 /
+# camera_vip / camera_affinity / gc_boost / shield_fg / affinity(cgroup.procs) /
+# rogue / rayneo）。必须在 rm -rf run 之前执行，否则清单随目录一起消失。
+restore_all_on_exit
 
 # 3. 删除运行时文件与历史遗留
 rm -rf "$MODDIR/run"
 rm -f "$RLST"
 rm -f /data/local/tmp/memtonic.log /data/local/tmp/.memtonic.pid /data/local/tmp/.memtonic.trim
+# v1.13.19: 清理调试残留（曾推送到模块目录的临时测试夹具）
+rm -rf "$MODDIR/.t"

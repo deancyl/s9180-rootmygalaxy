@@ -388,8 +388,8 @@
     version: {t:'版本信息', b:'v1.13.13 这类编号是模块版本；vc53 是内部版本号（versionCode），供管理器判断是否需要更新。\n统计口径：本日志周期——日志超过 512KB 会截断并从零重新计数。'},
     refresh: {t:'自动刷新', b:'面板每 30 秒重新读一次状态，只在页面可见时执行，不额外唤醒手机。点「刷新」可立刻重读一次，不改变任何设置。'},
     psi: {t:'内存压力', b:'两个百分比是 PSI（Pressure Stall Information）avg10 读数：前一个表示「有些任务因内存慢下来」的时间占比，后一个表示「全部任务都卡住」的占比。\n数值越高越卡；达到 30% 会标红。数值来自 collect_stats 的 psi_s10 / psi_f10。'},
-    heap: {t:'系统核心内存', b:'指 system_server 的 Java 堆占用（MB）。\n阈值：460 泄压（trim 开始清理）、480 GC 加速（提权 ART GC 线程）、485 告警、496 OOM 线（接近系统强杀）。\n数值来自 collect_stats.ssheap（KB），与危机链同源；刻度条按 496MB 归一化。'},
-    crisis: {t:'内存细节（技术口径）', b:'阈值按当前底层常量：460MB trim / 480MB GC 加速 / 485MB 告警 / 496MB OOM 线。数值来自 collect_stats.ssheap（KB）与 run/ 状态文件；危机建议与计数为本日志周期累计（日志超 512KB 自动截断后从零重新计数）。\nGC 加速 = 堆高时提权 ART GC 守护线程；泄压失败 = am send-trim-memory 不可达。'},
+    heap: {t:'系统核心内存', b:'指 system_server 的 Java 堆占用（MB）。\n阈值：450 泄压（trim 开始清理）、460 GC 加速（ART GC 线程提权 -15 并绑大核）、470 告警、480 极限压制、496 OOM 线（接近系统强杀）。\n数值来自 collect_stats.ssheap（KB），与危机链同源；刻度条按 496MB 归一化。'},
+    crisis: {t:'内存细节（技术口径）', b:'阈值按当前底层常量：450MB trim / 460MB GC 加速 / 470MB 告警 / 480MB 极限压制 / 496MB OOM 线。数值来自 collect_stats.ssheap（KB）与 run/ 状态文件；危机建议与计数为本日志周期累计（日志超 512KB 自动截断后从零重新计数）。\nGC 加速 = 堆高时提权 ART GC 守护线程（nice -15 + 绑大核）；泄压失败 = am send-trim-memory 不可达，转内核 drop_caches 兜底。'},
     counts: {t:'保护记录怎么读', b:'「本周期事件」指本日志周期内 14 类保护动作的累计次数；日志超过 512KB 自动截断后从零重新计数（v1.13.0 起由 256KB 上调）。\n「已触发」表示这一类真的动过；「待命中」表示条件没满足、没做任何调整。下面「每一类具体管什么」保留原始口径与触发条件，供排查用。'},
     constraints: {t:'运行状态与限制', b:'眼镜相关治理 = FR-RN1：对雷鸟 App 后台渲染 / 池线程温和降权；语音链路在启动削峰时被单独豁免。「已暂停」表示 disable_rayneo_guard 标记存在，治理临时关闭（安全状态）。\n未完成的更新回滚 = staged rollback（state=enabling），数量大于 0 时严禁重启。\n系统异常记录 = HAL tombstone，来自 dropbox 的历史崩溃档案，多数非致命。\n模块只做只读观测与逐线程优先级调度，不发起重启、拆回滚或停止应用。'},
     rollback: {t:'什么是未完成的更新回滚', b:'staged rollback 是系统已下载、等待重启生效的更新回滚会话（state=enabling）。\n此时重启可能触发完整重启并丢失临时 root，因此面板显示「禁止重启」，并抑制自动重启建议。模块绝不代执行任何重启，请先手动核查回滚状态。'},
@@ -441,7 +441,7 @@
     ['mjburst','mjburst','卡顿预警','前台 major fault 突增预警次数','突发 majflt（灾难级 >10 万/60s）'],
     ['bt','bt','蓝牙保护','蓝牙音频栈 / LE-GATT 压力 / 断连重连护航次数','蓝牙放音或 GATT 压力且系统拥堵'],
     ['flush','flush','相机加速','face 服务借相机时提权 camera provider 线程（59-79 线程，15s 或条件消失还原）','provider 线程 D 状态 或 CPU PSI ≥35% / mem PSI ≥10%'],
-    ['gcboost','gcboost','回收加速','堆危机时 ART GC 守护线程提权 -10 加速回收的次数','堆 ≥480MB 或泄压失败 ≥2'],
+    ['gcboost','gcboost','回收加速','堆危机时 ART GC 守护线程提权 -15 并绑大核、加速回收的次数','堆 ≥460MB 或泄压失败 ≥2'],
     ['ssprobe','ssprobe','内存检查','system_server Java 堆水位探测与 trim 泄压次数','RSS ≥700MB / 线程 ≥600 / 定时探测 / trim 复测'],
     ['forecast','forecast','提前整理','内存余量预测态与前置压实次数','avail <2.5GB 且 swap >7.5GB 连续 3 轮'],
     ['bt3','bt3','眼镜重连','雷鸟 BR/EDR 断连后 LE 重连窗口护航次数','ACL_DISCONNECTED(RayNeo) 广播命中']
@@ -485,9 +485,9 @@
     if (isNaN(n) || n <= 0) return {key:'na', label:'无数据', color:'var(--tx2)', pct:0};
     var pct = Math.min(100, Math.round(n*100/HEAP_OOM));
     if (n >= HEAP_OOM)   return {key:'critical', label:'临界 / OOM 线', color:'var(--err)', pct:100};
-    if (n >= HEAP_ALERT) return {key:'alert', label:'告警区 ≥485MB', color:'var(--err)', pct:pct};
-    if (n >= HEAP_GC)    return {key:'gc', label:'GC 加速区 ≥480MB', color:'#fb923c', pct:pct};
-    if (n >= HEAP_TRIM)  return {key:'trim', label:'泄压区 ≥460MB', color:'var(--warn)', pct:pct};
+    if (n >= HEAP_ALERT) return {key:'alert', label:'告警区 ≥470MB', color:'var(--err)', pct:pct};
+    if (n >= HEAP_GC)    return {key:'gc', label:'GC 加速区 ≥460MB', color:'#fb923c', pct:pct};
+    if (n >= HEAP_TRIM)  return {key:'trim', label:'泄压区 ≥450MB', color:'var(--warn)', pct:pct};
     return {key:'ok', label:'正常', color:'var(--ok)', pct:pct};
   }
   function fmtGuard(kv){
@@ -607,7 +607,11 @@
     var psi = parseFloat(kv.psi_s10); if (isNaN(psi)) psi = 0;
     var cpsi = parseFloat(kv.cpu_psi_s10); if (isNaN(cpsi)) cpsi = 0;
     if (availMB > 0){ if (availMB < 1500) s -= 30; else if (availMB < 2500) s -= 15; }
-    if (heapMB > 0){ if (heapMB >= 481) s -= 40; else if (heapMB >= 460) s -= 25; else if (heapMB >= 440) s -= 10; }
+    // v1.13.19: 直接用 KB 常量比较。原 `heapMB >= 481` 实际是 481MB(=492544KB)，
+    // 高过 470MB 告警线（481280KB），造成"界面显示告警区、健康分只扣 25"的不一致；
+    // MB 换算也容易与 mt_lib 常量漂移，这里与 heapBand 共用同一组 KB 常量。
+    var heapKB = int0(kv.ssheap);
+    if (heapKB > 0){ if (heapKB >= 481280) s -= 40; else if (heapKB >= 460800) s -= 25; else if (heapKB >= 440320) s -= 10; }
     if (swapUsedMB > 6000) s -= 25; else if (swapUsedMB > 4000) s -= 12;
     if (psi >= 30) s -= 15; else if (psi >= 15) s -= 6;
     if (cpsi >= 50) s -= 12; else if (cpsi >= 30) s -= 5;
@@ -761,11 +765,9 @@
         + 'for pf in memtonic.pid guard.pid cpuguard.pid fluencyshield.pid; do p=$(cat ' + BASE + '/run/$pf 2>/dev/null); p=${p%%:*}; k=${pf%.pid}; [ -n "$p" ] && [ -d /proc/$p ] && echo g_$k=alive || echo g_$k=dead; done; '
         + 'echo root=$(id -u); [ -f ' + BASE + '/run/disable_rayneo_guard ] && echo rayneo_bypass=ON || echo rayneo_bypass=OFF; '
         + '_rl=$(awk "END{print NR}" ' + BASE + '/run/rayneo_governor.lst 2>/dev/null); echo rayneo_lines=${_rl:-0}; '
-        + 'echo ex_rejected=$(grep -c event=start_rejected ' + BASE + '/run/memtonic.log 2>/dev/null); '
-        + 'echo ex_rootlost=$(grep -c event=root_lost_exit ' + BASE + '/run/memtonic.log 2>/dev/null); '
+        + '_sl=' + BASE + '/run/memtonic.log; _st=$(awk "/event=start_rejected/{a++} /event=root_lost_exit/{b++} /act=ss_heap_relief/ && /result=fail/{c++} /advise=soft_reboot/{d++} END{print a+0,b+0,c+0,d+0}" "$_sl" 2>/dev/null); set -- $_st; _r1=${1:-0}; _r2=${2:-0}; _r3=${3:-0}; _r4=${4:-0}; echo ex_rejected=$_r1; echo ex_rootlost=$_r2; '
         + 'echo ---; _gb=$(awk "END{print NR}" ' + BASE + '/run/gc_boost.bak 2>/dev/null); echo gcboost=${_gb:-0}; '
-        + 'echo relief_fail=$(grep -c act=ss_heap_relief.*result=fail ' + BASE + '/run/memtonic.log 2>/dev/null); '
-        + 'echo advise_cnt=$(grep -c advise=soft_reboot ' + BASE + '/run/memtonic.log 2>/dev/null); '
+        + 'echo relief_fail=$_r3; echo advise_cnt=$_r4; '
         + '[ -f ' + BASE + '/run/mem_forecast.flag ] && echo forecast=ON || echo forecast=OFF; '
         + 'echo paging_last=$(cat ' + BASE + '/run/paging_storm.last 2>/dev/null); '
         + '_lp=$(ls -t ' + BASE + '/run/ssheap-*.log 2>/dev/null | head -1); echo last_probe=${_lp##*/}; '

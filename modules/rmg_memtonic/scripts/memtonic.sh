@@ -221,47 +221,12 @@ stop)
   # Screenshot Sentinel 清场
   rm -f "$SCREENSHOT_ACTIVE_FLAG" "$SCREENSHOT_END_TS" "$RUN/screenshot_fg.bak" 2>/dev/null
 
-  # v1.5.1: 护栏被 kill -9 强杀，主动兜底还原风暴降权
-  storm_restore_pending manual_stop
-  # v1.13.16 B0: 补全 kill -9 跳过的清场——GC 提权 / 相机 provider 亲和 / 核亲和约束
-  # （原 stop 只还原 rogue / rayneo / camera_vip / bt，这三类会残留到重启）
-  gc_boost_off 2>/dev/null
-  camera_affinity_off 2>/dev/null
-  if [ -s "$RUN/affinity_constrained.lst" ]; then
-    while read -r _ap _apkg _aorig; do
-      case "$_ap" in ''|*[!0-9]*) continue;; esac
-      case "$_aorig" in ''|*[!a-zA-Z0-9_-]*) continue;; esac
-      [ -d "/proc/$_ap" ] || continue
-      echo "$_ap" > "/dev/cpuset/$_aorig/tasks" 2>/dev/null
-    done < "$RUN/affinity_constrained.lst"
-    rm -f "$RUN/affinity_constrained.lst" 2>/dev/null
-  fi
-  # v1.6.0: 还原 CPU 失常护栏降权（cpu_guard 被强杀前来不及自清场）
-  if [ -s "$RUN/cpu_rogue_renice.lst" ]; then
-    while read -r tid on pkg; do
-      case "$tid" in ''|*[!0-9]*) continue;; esac
-      [ -d /proc/$tid ] || continue
-      cur=$(nice_of "$tid"); [ -n "$cur" ] || continue
-      renice -n $((on - cur)) -p "$tid" >/dev/null 2>&1
-    done < "$RUN/cpu_rogue_renice.lst"
-    rm -f "$RUN/cpu_rogue_renice.lst" 2>/dev/null
-  fi
-
-  # v1.13.12(P1-4 完整版): FR-RN1 降权还原——cpu_guard 被 pkill -9 时退出清场不可达，
-  # stop 兜底补齐（Tgid 归属校验语义与 cpu_guard.sh rayneo_restore_all 一致）
-  if [ -s "$RUN/rayneo_governor.lst" ]; then
-    _rnrp=$(pidof com.rayneo.venus.pub 2>/dev/null | awk '{print $1}')
-    while read -r tid on comm; do
-      case "$tid" in ''|*[!0-9]*) continue;; esac
-      [ -d /proc/$tid ] || continue
-      _tg=$(awk '/^Tgid:/{print $2; exit}' /proc/$tid/status 2>/dev/null)
-      case "$_tg" in ''|*[!0-9]*) continue;; esac
-      { [ -n "$_rnrp" ] && [ "$_tg" = "$_rnrp" ]; } || continue
-      cur=$(nice_of "$tid"); [ -n "$cur" ] || continue
-      renice -n $((on - cur)) -p "$tid" >/dev/null 2>&1
-    done < "$RUN/rayneo_governor.lst"
-    rm -f "$RUN/rayneo_governor.lst" "$RUN/rayneo_notified" 2>/dev/null
-  fi
+  # v1.13.19: 清场统一收口到 mt_lib.sh:restore_all_on_exit，与 uninstall.sh 共用同一
+  # 份序列（storm / flush / bt / bt2 / camera_vip / camera_affinity / gc_boost /
+  # shield_fg / affinity(cgroup.procs) / rogue / rayneo）。
+  # 原实现 stop 与 uninstall 各自维护一份，v1.13.16 B0 只补了一部分，形成"补了 A 漏了 B"
+  # 的结构性隐患——11-08 审计实测 uninstall.sh 的 pkill 数为 0，三个子守护会变孤儿。
+  restore_all_on_exit
 
   touch "$RUN/.clean_stop" 2>/dev/null   # v1.13.4: 正常收尾标记（boot_postmortem 判异常中断用）
   logx E "event=stop"

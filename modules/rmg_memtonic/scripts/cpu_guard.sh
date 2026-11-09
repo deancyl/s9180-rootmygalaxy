@@ -94,7 +94,9 @@ rogue_throttle() {
     case "$on" in ''|*[!0-9-]*) continue;; esac
     [ "$on" -lt 0 ]  && continue  # 高优先级线程（GEMINI.md 铁律：绝不降级）
     [ "$on" -ge 10 ] && continue  # 已是低优，无需重复操作
-    if renice -n 10 -p "$tid" >/dev/null 2>&1; then
+    # v1.13.19: renice -n 是增量语义（同 fluency_shield 的 Fix-B 注释），原 `-n 10`
+    # 会把 on=5 的线程推到 15 而非目标 10。改为"增量补齐到 10"。
+    if renice -n $((10 - on)) -p "$tid" >/dev/null 2>&1; then
       echo "$tid $on $pkg" >> "$ROGUE_LST" 2>/dev/null
     fi
   done
@@ -185,8 +187,11 @@ rayneo_restore_all() {
   _rnrp=$(pidof "$RAYNEO_PKG" 2>/dev/null); _rnrp=${_rnrp%% *}
   while read -r tid on comm; do
     [ -d "/proc/$tid" ] || continue
+    # v1.13.19: 原 `IFS=' '` 只含空格，而 /proc/<tid>/status 的 Tgid 行是
+    # "Tgid:\t<pid>"（Tab 分隔）——显式空格 IFS 不拆 Tab，_tk 恒不等于 "Tgid:"，
+    # 导致 _tg 恒空、本函数 100% 跳过（restored=0）。改默认 IFS（空格/Tab/换行）。
     _tg=""
-    while IFS=' ' read -r _tk _tv _; do
+    while read -r _tk _tv _; do
       [ "$_tk" = "Tgid:" ] && { _tg=$_tv; break; }
     done < "/proc/$tid/status" 2>/dev/null
     case "$_tg" in ''|*[!0-9]*) continue ;; esac
@@ -230,15 +235,20 @@ rayneo_governor() {
   if [ -f "$RUN/disable_rayneo_guard" ]; then rayneo_restore_all; return 0; fi
   rpid=$(pidof "$RAYNEO_PKG" 2>/dev/null); rpid=${rpid%% *}
   if [ -z "$rpid" ]; then rayneo_restore_all; return 0; fi
-  if rayneo_memo_active; then rayneo_restore_all; return 0; fi
+  # v1.13.19: memo 检测由"独立整轮遍历"并入下方降权循环——原 rayneo_memo_active 与
+  # 降权循环各遍历 161 个线程（322 次 /proc 读/轮），是 cpu_scan 340-730ms 的主要剩余项。
+  # 判定语义不变：命中 VAD 线程即整体还原返回；此时尚未执行任何 renice（批量在循环后）。
   if rayneo_eyewear_active; then rayneo_restore_all; return 0; fi
   if [ -s "$RN_STATE" ]; then
     _rntmp="$RUN/rn_tmp_clean_$$"
     while read -r tid on comm; do
       if [ -d "/proc/$tid" ]; then
         # P0-1: 死条目清理同样带 Tgid 归属校验
+        # v1.13.19: 同上——默认 IFS 才拆 Tab。原实现此处 _tg 恒空，
+        # `[ "$_tg" = "$rpid" ]` 永假 → _rntmp 从不写入 → 每轮 rm -f RN_STATE，
+        # 已降权 tid 全部"失忆"，下轮重新当新线程降权（739 次重复的直接来源）。
         _tg=""
-        while IFS=' ' read -r _tk _tv _; do
+        while read -r _tk _tv _; do
           [ "$_tk" = "Tgid:" ] && { _tg=$_tv; break; }
         done < "/proc/$tid/status" 2>/dev/null
         [ "$_tg" = "$rpid" ] && echo "$tid $on $comm" >> "$_rntmp" 2>/dev/null
@@ -256,10 +266,12 @@ rayneo_governor() {
       _known="$_known$_kt "
     done < "$RN_STATE"
   fi
-  _b0=""; _bx=""
+  _b0=""; _bx=""; _rnbuf=""
   for t in /proc/$rpid/task/*; do
     tid=${t##*/}
     IFS= read -r comm < "$t/comm" 2>/dev/null || continue   # v1.13.13: 零 fork（原 cat 子进程）
+    # v1.13.19: VAD 载体线程（全天智记拾音中）→ 整体还原并退出，本轮不做任何降权
+    case "$comm" in "$RAYNEO_MEMO_THREAD"*) rayneo_restore_all; return 0 ;; esac
     case "$comm" in
       *raster*|pool-*|DefaultDispatch*|DartWorker*|DefaultExecutor*|AMap*) ;;
       *) continue ;;
@@ -268,11 +280,17 @@ rayneo_governor() {
     on=$(nice_of "$tid"); case "$on" in ''|*[!0-9-]*) continue;; esac
     [ "$on" -le -10 ] && continue
     [ "$on" -ge "$RAYNEO_TARGET_NICE" ] && continue
-    echo "$tid $on $comm" >> "$RN_STATE" 2>/dev/null
+    # v1.13.19: 先收进内存，遍历结束确认"无 VAD"后再落盘，避免中途 return 留下
+    # 半成品 RN_STATE（原实现在循环内直接 append）。
+    _rnbuf="$_rnbuf$tid $on $comm
+"
     _rn_new=$((_rn_new+1))
     # 分桶：nice=0 的合并批量（绝大多数），其余逐个（极少）
     if [ "$on" -eq 0 ]; then _b0="$_b0 $tid"; else _bx="$_bx $tid:$on"; fi
   done
+  if [ "$_rn_new" -gt 0 ]; then
+    printf '%s' "$_rnbuf" >> "$RN_STATE" 2>/dev/null
+  fi
   # v1.13.16 B1c: 批量 renice——toybox renice 支持多 PID（实机验证 OK）
   if [ -n "$_b0" ]; then
     renice -n "$RAYNEO_TARGET_NICE" -p $_b0 >/dev/null 2>&1
@@ -496,10 +514,17 @@ mem_forecast() {
     _mf_c=$(cat "$RUN/mf_confirmed" 2>/dev/null); case "$_mf_c" in ''|*[!0-9]*) _mf_c=0;; esac
     _mf_c=$((_mf_c + 1))
     echo "$_mf_c" > "$RUN/mf_confirmed" 2>/dev/null
-    if [ "$_mf_c" -ge "$MF_CONFIRM" ] && [ ! -f "$RUN/mem_forecast.flag" ]; then
-      echo "avail_kb=$_av swap_kb=$_sw ts=$(date '+%m-%d %H:%M:%S')" > "$RUN/mem_forecast.flag" 2>/dev/null
-      logx E "warn=mem_forecast avail_kb=$_av swap_kb=$_sw msg=内存余量告急_未来1-2h可能严重卡顿_建议关闭后台大型应用或择机软重启"
-      notify_alert forecast "MemTonic: 内存余量告急（可用$((_av/1024))MB、swap满载）——未来1-2h可能严重卡顿，建议关闭后台大型应用或择机软重启"
+    if [ "$_mf_c" -ge "$MF_CONFIRM" ]; then
+      if [ ! -f "$RUN/mem_forecast.flag" ]; then
+        echo "avail_kb=$_av swap_kb=$_sw ts=$(date '+%m-%d %H:%M:%S')" > "$RUN/mem_forecast.flag" 2>/dev/null
+        logx E "warn=mem_forecast avail_kb=$_av swap_kb=$_sw msg=内存余量告急_未来1-2h可能严重卡顿_建议关闭后台大型应用或择机软重启"
+        notify_alert forecast "MemTonic: 内存余量告急（可用$((_av/1024))MB、swap满载）——未来1-2h可能严重卡顿，建议关闭后台大型应用或择机软重启"
+      else
+        # v1.13.19: 预测态持续期间刷新最新值。原实现只在首次落盘，之后 avail_kb 永久
+        # 冻结——11-08 真机：08:06 写入 1449792（1.38GB），10:39/11:10 实际可用已回到
+        # 1.9-2.4GB，仍被判为"余量告急"并触发了两次亮屏压实。
+        echo "avail_kb=$_av swap_kb=$_sw ts=$(date '+%m-%d %H:%M:%S') upd=1" > "$RUN/mem_forecast.flag" 2>/dev/null
+      fi
     fi
   else
     echo 0 > "$RUN/mf_confirmed" 2>/dev/null
@@ -514,6 +539,10 @@ mem_forecast() {
 # v1.13.10: 核亲和约束工具（FR-11 例外升级的动作端）
 # AFF_LST 记录被约束进程的原始 cpuset 组（还原依据）；死进程条目自动清理。
 AFF_LST=$RUN/affinity_constrained.lst
+# v1.13.19: cpuset 迁移接口由 tasks 改 cgroup.procs。
+# 原因：cpuset v1 的 `tasks` 语义是"逐个线程"，写入 tgid 只迁到该线程组的主线程，
+# 工作线程（渲染/解码/网络池）仍留在 /foreground —— 真机实测约束后 CPU 未见下降，
+# cgroup 成员却显示只有主线程。`cgroup.procs` 按线程组整体迁移，才是本功能的意图。
 affinity_constrain_one() {
   pid=$1; pkg=$2
   grep -q "cpuset:/background" "/proc/$pid/cgroup" 2>/dev/null && return 0
@@ -521,7 +550,7 @@ affinity_constrain_one() {
   # awk $NF 会把整行当路径（实弹往返实测还原拼出 /dev/cpuset/4:cpuset://tasks 失败）
   orig=$(grep "cpuset:" "/proc/$pid/cgroup" 2>/dev/null | head -n 1 | cut -d: -f3)
   [ -n "$orig" ] || return 0
-  echo "$pid" > /dev/cpuset/background/tasks 2>/dev/null || return 0
+  echo "$pid" > /dev/cpuset/background/cgroup.procs 2>/dev/null || return 0
   grep -q "cpuset:/background" "/proc/$pid/cgroup" 2>/dev/null || return 0
   echo "$pid $pkg $orig" >> "$AFF_LST" 2>/dev/null
   logx E "event=cpu_affinity_constrain pid=$pid pkg=$pkg orig=$orig msg=前台服务CPU大户_核亲和约束至小核(0-2)_大核还前台"
@@ -532,7 +561,7 @@ affinity_restore_one() {
   pid=$1; pkg=$2
   orig=$(grep "^$pid $pkg " "$AFF_LST" 2>/dev/null | awk '{print $3}' | head -n 1)
   [ -n "$orig" ] || return 0
-  echo "$pid" > "/dev/cpuset/$orig/tasks" 2>/dev/null
+  echo "$pid" > "/dev/cpuset/$orig/cgroup.procs" 2>/dev/null
   sed -i "\|^$pid $pkg |d" "$AFF_LST" 2>/dev/null
   logx A "act=cpu_affinity_restore pid=$pid pkg=$pkg cpuset=$orig msg=CPU回落或用户使用_核亲和已还原"
   return 0
@@ -602,18 +631,36 @@ mem_probe() {
   # v1.13.9 (P-B): 预测态前置压实——内存余量告急且 <2.2GB 时压实（30min 限频）。
   # 复用 do_fg_compact 的锁/冷却/相机规避全套保护；相机/截屏/风暴活动时让位（其内部跳过）。
   if [ -f "$RUN/mem_forecast.flag" ]; then
-    _mf_av=$(grep -oE "avail_kb=[0-9]+" "$RUN/mem_forecast.flag" 2>/dev/null | head -1 | cut -d= -f2)
+    # v1.13.19: 用实时可用内存判定，不再读 flag 里的历史值（旧实现读 08:06 冻结的
+    # 1.38GB，在实际 2.4GB 时仍触发压实）；flag 只作"预测态存在"的信号。
+    _mf_av=$(awk '/MemAvailable/{print $2+0; exit}' /proc/meminfo 2>/dev/null)
     case "$_mf_av" in ''|*[!0-9]*) _mf_av=0;; esac
     if [ "$_mf_av" -gt 0 ] && [ "$_mf_av" -lt 2252800 ]; then
-      _now=$(date +%s)
-      _pfc=$(cat "$RUN/mf_compact.ts" 2>/dev/null); case "$_pfc" in ''|*[!0-9]*) _pfc=0;; esac
-      if [ $((_now - _pfc)) -ge 1800 ]; then
-        echo "$_now" > "$RUN/mf_compact.ts" 2>/dev/null
-        if [ ! -f "$CAMERA_ACTIVE_FLAG" ] && [ ! -f "$SCREENSHOT_ACTIVE_FLAG" ] && [ ! -d "$STORM_FLAG" ]; then
-          do_fg_compact
-          logx W "act=forecast_compact avail_kb=$_mf_av msg=预测态前置压实_30min限频"
-        else
-          logx S "act=forecast_compact skipped msg=相机/截屏/风暴活动中_让位"
+      # v1.13.19: 亮屏需同时存在真实内存压力（mem PSI ≥10）才压实。psi≈0 表示没有
+      # 争抢，压实只会丢弃页缓存、制造新的缺页，对体感是负收益。息屏无帧预算约束，放行。
+      _mf_screen=1
+      if [ -r /sys/class/backlight/panel0-backlight/brightness ]; then
+        IFS= read -r _mf_bl < /sys/class/backlight/panel0-backlight/brightness 2>/dev/null
+        case "$_mf_bl" in
+          ''|*[!0-9]*) : ;;
+          *) [ "$_mf_bl" -eq 0 ] && _mf_screen=0 ;;
+        esac
+      fi
+      _mf_psi=${P_S10:-0}
+      case "$_mf_psi" in ''|*[!0-9]*) _mf_psi=0;; esac
+      if [ "$_mf_screen" -eq 1 ] && [ "$_mf_psi" -lt 10 ]; then
+        logx S "act=forecast_compact skip=no_pressure avail_kb=$_mf_av psi=$_mf_psi"
+      else
+        _now=$(date +%s)
+        _pfc=$(cat "$RUN/mf_compact.ts" 2>/dev/null); case "$_pfc" in ''|*[!0-9]*) _pfc=0;; esac
+        if [ $((_now - _pfc)) -ge 1800 ]; then
+          echo "$_now" > "$RUN/mf_compact.ts" 2>/dev/null
+          if [ ! -f "$CAMERA_ACTIVE_FLAG" ] && [ ! -f "$SCREENSHOT_ACTIVE_FLAG" ] && [ ! -d "$STORM_FLAG" ]; then
+            do_fg_compact
+            logx W "act=forecast_compact avail_kb=$_mf_av psi=$_mf_psi screen=$_mf_screen msg=预测态前置压实_30min限频"
+          else
+            logx S "act=forecast_compact skipped msg=相机/截屏/风暴活动中_让位"
+          fi
         fi
       fi
     fi
@@ -724,7 +771,35 @@ init_dropbox_state
 _init_app_list=$(snapshot_app_pids)
 take_ticks_snapshot "$_init_app_list"
 
+# v1.13.19: 子守护自愈——fluency_shield / storm_guard 意外死亡（被 OOM 杀、异常退出）时
+# 由本循环重新拉起。原实现只靠 memtonic.sh 主进程 1h 粒度的粗略看护，而 service.sh 的
+# 幂等判断只校验 memtonic.pid，任一子进程死亡都会静默失去该能力直到手动重启。
+# 成本纪律：pid 文件存活时**零 fork**直接返回；只有失活/缺失才用 pgrep 复核是否真有
+# 孤儿（避免 pid 文件丢失时拉出双实例）。初版每轮无条件 2 次 pgrep -f 会全盘扫
+# /proc/*/cmdline，实测把 cpu_scan 从 190-270ms 抬到 440-700ms，已改回条件触发。
+child_heal() {
+  _ch_f=$(cat "$RUN/fluencyshield.pid" 2>/dev/null); _ch_f=${_ch_f%%:*}
+  case "$_ch_f" in ''|*[!0-9]*) _ch_f="";; esac
+  if [ -z "$_ch_f" ] || [ ! -d "/proc/$_ch_f" ]; then
+    set -- $(pgrep -f 'scripts/fluency_shield\.sh' 2>/dev/null)
+    if [ "$#" -eq 0 ]; then
+      nohup sh "$MODDIR/scripts/fluency_shield.sh" >/dev/null 2>&1 &
+      logx W "event=child_heal target=fluency_shield result=relaunched old=${_ch_f:-NA}"
+    fi
+  fi
+  _ch_g=$(cat "$GUARD_PIDF" 2>/dev/null); _ch_g=${_ch_g%%:*}
+  case "$_ch_g" in ''|*[!0-9]*) _ch_g="";; esac
+  if [ -z "$_ch_g" ] || [ ! -d "/proc/$_ch_g" ]; then
+    set -- $(pgrep -f 'scripts/storm_guard\.sh' 2>/dev/null)
+    if [ "$#" -eq 0 ]; then
+      nohup sh "$MODDIR/scripts/storm_guard.sh" >/dev/null 2>&1 &
+      logx W "event=child_heal target=storm_guard result=relaunched old=${_ch_g:-NA}"
+    fi
+  fi
+}
+
 # ---- 主循环 ----
+shield_fg_restore    # v1.13.19: 启动自愈——还原上一轮护盾遗留的 -15 提权
 rayneo_restore_all   # v1.13.11: 启动自愈——清理上一轮（崩溃/stop）残留的降权状态
 _mem_hi=0            # v1.10: 连续超阈轮数
 _fg_mflt_prev=       # v1.10: 前台 majflt 上轮基线
@@ -733,6 +808,7 @@ while kill -0 "$PPID" 2>/dev/null; do
   sleep $CPU_SCAN_WIN
   check_root_liveness
   check_dropbox          # FR-5：每 60s 检查崩溃/ANR 事件
+  child_heal             # v1.13.19: 子守护存活自愈（fluency_shield / storm_guard）
   mem_probe              # v1.10：内存风暴探针（60s 粒度，零新增唤醒，取证不避风暴）
   cce_watch              # v1.13.4：CrashRecovery 回滚征兆（300s stat 级，零新增唤醒）
 

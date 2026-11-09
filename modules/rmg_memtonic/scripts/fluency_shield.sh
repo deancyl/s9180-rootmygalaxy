@@ -99,9 +99,23 @@ done
 sc_prev_count=0
 [ -n "$sc_dir" ] && sc_prev_count=$(ls "$sc_dir" 2>/dev/null | wc -l)
 
+shield_fg_restore   # v1.13.19: 启动自愈——还原上一轮护盾遗留的 -15 提权
+
 while true; do
   sleep 5
   _tick_ts=$(date +%s)   # v1.13.2: 每 tick 一次时间获取（原循环内 6 次 date fork）
+
+  # v1.13.19: 息屏空闲判定（零 fork）——息屏且蓝牙/相机/截屏均空闲时，跳过 10s 焦点
+  # 采样与截屏目录扫描。亮度文件缺失/不可读按"亮屏"处理（失败安全：只多耗电，不漏检）。
+  _idle_screen=0
+  if [ "$bt_state" -eq 0 ] && [ "$bt2_state" -eq 0 ] && [ "$bt3_state" -eq 0 ] && [ "$flush_state" -eq 0 ]; then
+    _bl_v=1
+    if [ -r /sys/class/backlight/panel0-backlight/brightness ]; then
+      IFS= read -r _bl_v < /sys/class/backlight/panel0-backlight/brightness 2>/dev/null
+      case "$_bl_v" in ''|*[!0-9]*) _bl_v=1;; esac
+    fi
+    [ "$_bl_v" -eq 0 ] && _idle_screen=1
+  fi
 
   # =========================================================
   # FR-C Camera Sentinel
@@ -113,7 +127,9 @@ while true; do
   #   上一状态；相机激活/退出判定延迟 ≤10s（相机启动到可拍摄 >2s，可接受）。
   # =========================================================
   _cam_tick=$((_cam_tick + 1))
-  if [ $((_cam_tick % 2)) -eq 1 ]; then
+  if [ "$_idle_screen" -eq 1 ]; then
+    cam_now=$cam_state      # v1.13.19: 息屏时相机不可能在前台，沿用上一状态不采样
+  elif [ $((_cam_tick % 2)) -eq 1 ]; then
     cam_now=0
     _cam_focus=$(focused_pkg)
     case "$_cam_focus" in
@@ -416,7 +432,7 @@ while true; do
   # FR-S Screenshot Sentinel
   # 通过文件数变化检测新截屏，O(1)，无 dumpsys/pgrep 开销
   # =========================================================
-  if [ -n "$sc_dir" ]; then
+  if [ -n "$sc_dir" ] && [ "$_idle_screen" -eq 0 ]; then
     sc_cur_count=$(ls "$sc_dir" 2>/dev/null | wc -l)
     if [ "$sc_cur_count" -gt "$sc_prev_count" ]; then
       # 新截屏检测到
@@ -515,7 +531,13 @@ while true; do
     # 2. 备份并提权 SurfaceFlinger
     if [ -n "$sf_pid" ]; then
       sf_orig=$(nice_of "$sf_pid")
-      renice -n -15 -p "$sf_pid" >/dev/null 2>&1
+      case "$sf_orig" in ''|*[!0-9-]*) sf_orig=0;; esac
+      # v1.13.19: renice -n 是增量语义（见下方 Fix-B 注释）。原 `renice -n -15` 会在
+      # 已提权过的 SF 上继续累加（实测 -10 → -25），且缺"防反向降级"守卫。
+      # 改为增量补齐到 -15，且仅当当前优先级高于 -15 时执行。
+      if [ "$sf_orig" -gt -15 ]; then
+        renice -n $((-15 - sf_orig)) -p "$sf_pid" >/dev/null 2>&1
+      fi
     fi
 
     # 3. 精准提权前台 App 主线程与 RenderThread
@@ -555,6 +577,14 @@ while true; do
       logx W "event=shield_activate psi_int=$psi_int cpu_psi_int=$cpu_psi_int pkg=unknown msg=系统拥堵_仅护航系统渲染层"
     fi
 
+    # v1.13.19: 护盾提权持久化——sleep 15 期间若被 kill -9 / 卸载 / 崩溃，内存态变量
+    # 全丢，SF 与前台主线程会永久停在 -15（nice 只提不降，越积越高）。落盘供
+    # cpu_guard 启动自愈、stop、uninstall 统一还原。
+    : > "$RUN/shield_fg.bak" 2>/dev/null
+    if [ -n "$sf_pid" ] && [ -n "$sf_orig" ]; then echo "sf $sf_pid $sf_orig" >> "$RUN/shield_fg.bak" 2>/dev/null; fi
+    if [ -n "$fg_pid" ] && [ -n "$fg_orig" ]; then echo "fg $fg_pid $fg_orig" >> "$RUN/shield_fg.bak" 2>/dev/null; fi
+    if [ -n "$rt_tid" ] && [ -n "$rt_orig" ]; then echo "rt $rt_tid $rt_orig" >> "$RUN/shield_fg.bak" 2>/dev/null; fi
+
     # 4. 维持护航 15 秒
     sleep 15
 
@@ -575,6 +605,7 @@ while true; do
       fi
       logx I "event=shield_deactivate pkg=$fg_pkg msg=压力回落_精准还原全部特权"
     fi
+    rm -f "$RUN/shield_fg.bak" 2>/dev/null   # v1.13.19: 还原完成，清持久化记录
 
 
     is_boosting=0

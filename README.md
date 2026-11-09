@@ -25,7 +25,8 @@ MemTonic 是**配套本仓库临时 root 环境使用**的 KernelSU 模块：软
 
 | MemTonic | 说明 | 适用人群 |
 |---|---|---|
-| [`v1.13.18`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.18) | **当前最新**：**FR-RN1 雷鸟治理首次成功启用**（根因是逐线程 renice ≈600 fork/轮，改按 nice 分桶批量调用后 cpu_scan 340–730ms，历史为 1770–13010ms）+ WebUI **健康分首屏**（可用/堆/swap/PSI/CPU-PSI 综合 0–100 分 + 一句人话）+ 折叠区 6→4 | **新装首选** |
+| [`v1.13.19`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.19) | **当前最新**：外部审计 9 项修复（**不改阈值、不改功能语义**）——Tgid Tab 分隔符（`rayneo_restore` 由 `restored=0` 修复为实测 3）、cpuset 改 `cgroup.procs` 全线程迁移、卸载补齐 4 条 `pkill`（消除孤儿守护）、`renice` 增量语义与 SF 提权守卫 + 护盾提权落盘、`mem_forecast` 读实时值（修亮屏 psi=0 误压实）、`am` 加 `timeout 2`、`dumpsys rollback` 单次采集、`collect_stats` 单次 awk、`is_frozen_pid` 跳过冻结进程、护盾息屏降频、`child_heal` 子守护自愈、KernelSU 规范（`MODDIR=${0%/*}` + `customize.sh`/`hotinstall.sh` 热安装）；WebUI 阈值对齐 450/460/470/496。单测 289/289。**已知 P0（本版未修）**：FR-4 毒瘤检测自 v1.9.9 起失效（1349 次扫描 0 次干预） | **新装首选** |
+| [`v1.13.18`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.18) | **FR-RN1 雷鸟治理首次成功启用**（根因是逐线程 renice ≈600 fork/轮，改按 nice 分桶批量调用后 cpu_scan 340–730ms，历史为 1770–13010ms）+ WebUI **健康分首屏**（可用/堆/swap/PSI/CPU-PSI 综合 0–100 分 + 一句人话）+ 折叠区 6→4 | 稳定保守选择 |
 | [`v1.13.17`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.17) | FR-RN1 批量 renice（首次通过 5 轮验收）；含 v1.13.16 的 stop/uninstall 还原完整性与零 fork 化（二者同一提交） | 稳定保守选择 |
 | [`v1.13.15`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.15) | 审计后**纯降本**——堆探测门控（RSS 变化 <30MB 且 mem PSI <5% 时跳过 `dumpsys`，消除 9s 级扫描尖峰）、扫描日志降频、堆快照限流（危机态不限、保留 OOM 现场）、护航复用前台采样；零功能损失、阈值语义不变 | 历史存档 |
 | [`v1.13.14`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.14) | FR-SS 六项硬化——`am` 失败后走内核 `drop_caches` 兜底、阈值前移 430/450/460/470/480MB、GC 提权 -15 + 绑大核、连续 3 点趋势判定、抑制态极限压制；WebUI flag 时效化 + ⓘ 弹层 + CSS 误伤修复 | 历史存档 |
@@ -142,7 +143,8 @@ s9180-rootmygalaxy/
 ├── README.md                                    ← 本文件
 ├── LICENSE                                      ← GPL-3.0（KernelSU 衍生代码）
 ├── modules/
-│   └── rmg_memtonic/                            ← MemTonic 内存守护模块（当前主干 v1.13.18 / vc58）
+│   └── rmg_memtonic/                            ← MemTonic 内存守护模块（当前主干 v1.13.19 / vc59）
+│       ├── customize.sh / hotinstall.sh         ← KernelSU 安装脚本与热安装钩子（v1.13.19）
 │       启动风暴护栏 + CPU 失常护栏 + 前台护盾 + Camera/Screenshot Sentinel +
 │       Rollback 地雷排除哨兵 + 结构化日志；版本历史见上方 Releases，
 │       完整变更记录见 modules/rmg_memtonic/CHANGELOG.md

@@ -39,7 +39,24 @@ MODDIR="${SCRIPT_DIR%/*}"
 RUN=$MODDIR/run          # 运行时私有目录（root 700）
 LOG=$RUN/memtonic.log    # 审计日志（超 512KB 字节基准截断，v1.13.0: 256KB→512KB 保住更长取证窗口）
 MODULE_PROP=$MODDIR/module.prop  # v1.11.0: 模块声明文件（卡片描述动态统计的写入目标）
-MT_VERSION=v1.13.18              # v1.13.13: 模块版本（与 module.prop 同步，动态描述引用）
+MT_VERSION=v1.13.19              # v1.13.13: 模块版本（与 module.prop 同步，动态描述引用）
+
+# v1.13.19: am 走 binder 到 system_server，堆濒死时该调用会挂死（11-07 取证 22/22 fail
+# 且每次阻塞到超时）。有 timeout 就包一层，把单次上限压到 2s，防止 cpu_guard 主循环被
+# 拖住。toybox 自 Android 8 起提供 timeout；缺失时降级为裸调用（与原行为一致）。
+if command -v timeout >/dev/null 2>&1; then AM_TO="timeout 2"; else AM_TO=""; fi
+
+# v1.13.19: 显式绑定系统 Toybox 的 renice。
+# KernelSU 用 BusyBox ash 独立模式（ASH_STANDALONE=1）执行 service.sh，PATH 中 busybox
+# applet 优先于 /system/bin 的 toybox；而本模块对 renice 的语义假设（-n 为相对增量、
+# 支持多 PID 批量）是在 /system/bin/renice 上实测确认的。两个实现混用时会出现
+# "模块内正常、手动 su 后异常"这类极难定位的偏差。
+# 用同名函数覆盖而非改 20+ 处调用点——避免漏改。后续新增调用也自动生效。
+_sys_renice=/system/bin/renice
+[ -x "$_sys_renice" ] || _sys_renice=$(command -v renice 2>/dev/null)
+if [ -n "$_sys_renice" ]; then
+  renice() { "$_sys_renice" "$@"; }
+fi
 
 # v1.13.6 (F2): notify_alert <类型> <文本> —— 关键告警推送 Android 通知。
 # 通道实测（10-29 16:00）：root shell `cmd notification post` exit=0 可达用户 0。
@@ -265,6 +282,24 @@ is_in_top_app_cgroup() {
   return 1
 }
 
+# v1.13.19: dumpsys rollback 单次采集 + 60s 复用。
+# 背景：check_staged_rollback（1 次）与 check_rollback_disarm（3-4 次）各自 dump，
+# 每次 ~180ms binder，同一轮巡检重复采集同一份数据。落文件同时规避旧实现记录的
+# ARG_MAX 风险（输出曾 >140KB，经变量传参会 "Argument list too long"）。
+# 返回缓存文件路径；调用方取一次存变量，避免多次 fork。
+rollback_dump_get() {
+  _rd_now=$(date +%s)
+  _rd_mt=0
+  if [ -s "$RUN/rollback_dump.txt" ]; then
+    _rd_mt=$(stat -c %Y "$RUN/rollback_dump.txt" 2>/dev/null)
+    case "$_rd_mt" in ''|*[!0-9]*) _rd_mt=0;; esac
+  fi
+  if [ "$_rd_mt" -eq 0 ] || [ $((_rd_now - _rd_mt)) -gt 60 ]; then
+    dumpsys rollback > "$RUN/rollback_dump.txt" 2>/dev/null
+  fi
+  printf '%s' "$RUN/rollback_dump.txt"
+}
+
 # v1.5.0 Sentinel P0 / Fix-D v1.8.0: check_staged_rollback
 # 检测 Staged Rollback 挂起风险，6小时去重防日志刷屏
 check_staged_rollback() {
@@ -273,7 +308,8 @@ check_staged_rollback() {
   _last=$(cat "$ROLLBACK_WARNED_TS" 2>/dev/null)
   case "$_last" in ''|*[!0-9]*) _last=0;; esac
   [ $((_now - _last)) -lt 21600 ] && return 0
-  rb_cnt=$(dumpsys rollback 2>/dev/null | grep -c 'state: enabling')
+  _rbdf=$(rollback_dump_get)
+  rb_cnt=$(grep -c 'state: enabling' "$_rbdf" 2>/dev/null)
   case "$rb_cnt" in ''|*[!0-9]*) rb_cnt=0;; esac
   if [ "$rb_cnt" -gt 0 ]; then
     logx W "warn=staged_rollback_active count=$rb_cnt note=do_not_reboot"
@@ -445,6 +481,12 @@ storm_window() {
       fi
       if in_whitelist "$pkg"; then
         logx S "act=whitelist_skip pid=$pid pkg=$pkg"
+        done_pids="$done_pids$pid "; continue
+      fi
+      # v1.13.19: 跳过已被 cgroup freezer 冻结的进程（NoActive 等）。对冻结任务改 nice
+      # 既无收益（调度器不选它），解冻瞬间还要重新排队；wchan 判定零 fork。
+      if is_frozen_pid "$pid"; then
+        logx S "act=frozen_skip pid=$pid pkg=$pkg"
         done_pids="$done_pids$pid "; continue
       fi
       # v1.13.13 (11-06 ASR 取证): RayNeo 眼镜语音链路豁免「整进程」削峰。
@@ -797,9 +839,11 @@ ss_heap_relief() {
   # 直至崩溃期间堆失明。
   # v1.13.14：单轮最多 SS_TRIM_TRIES 次尝试（立即 / +4s / +8s，总阻塞 ≤8s），抓
   # framework 短暂可用窗口；全部失败则转内核路径 ss_drop_caches 兜底。
+  # v1.13.19：每次尝试用 timeout 2 包裹——原实现若 am 在 binder 上挂死，8s 的"上限"
+  # 不成立（11-07 实测单次可达 9s 级），cpu_guard 主循环（含 CPU 护栏）整段停摆。
   _ok=0; _try=1
   while [ "$_try" -le "$SS_TRIM_TRIES" ]; do
-    if am send-trim-memory "$_ss" RUNNING_CRITICAL >/dev/null 2>&1; then _ok=1; break; fi
+    if $AM_TO am send-trim-memory "$_ss" RUNNING_CRITICAL >/dev/null 2>&1; then _ok=1; break; fi
     [ "$_try" -lt "$SS_TRIM_TRIES" ] && sleep "$SS_TRIM_TRY_GAP"
     _try=$((_try + 1))
   done
@@ -1328,14 +1372,15 @@ check_rollback_disarm() {
   _last=$(cat "$ROLLBACK_DISARM_TS" 2>/dev/null)
   case "$_last" in ''|*[!0-9]*) _last=0;; esac
   [ $((_now - _last)) -lt 21600 ] && return 0
-  # ARG_MAX 防御（2026-10-08 部署实测修复）：dumpsys rollback 输出 >140KB（332 个 staged sessions 堆积），
-  # shell 变量经 printf 传参会报 "Argument list too long" 使检测静默失效 → dumpsys 直连管道不经变量
-  rb_id=$(dumpsys rollback 2>/dev/null | grep -B1 'state: enabling' | grep -o '^[0-9][0-9]*' | head -n 1)
+  # v1.13.19: 复用 rollback_dump_get 的 60s 缓存（原实现本函数内独立 dump 3-4 次，
+  # 每次 ~180ms binder）；落文件同时保留 2026-10-08 的 ARG_MAX 防御（不经 shell 变量）。
+  _rbdf=$(rollback_dump_get)
+  rb_id=$(grep -B1 'state: enabling' "$_rbdf" 2>/dev/null | grep -o '^[0-9][0-9]*' | head -n 1)
   if [ -z "$rb_id" ]; then
     return 0
   fi
   echo "$_now" > "$ROLLBACK_DISARM_TS" 2>/dev/null
-  rb_sid=$(dumpsys rollback 2>/dev/null | grep -A20 "^$rb_id:" | grep -m1 'originalSessionId' | grep -o '[0-9][0-9]*$')
+  rb_sid=$(grep -A20 "^$rb_id:" "$_rbdf" 2>/dev/null | grep -m1 'originalSessionId' | grep -o '[0-9][0-9]*$')
   if [ -z "$rb_sid" ]; then
     logx W "warn=rollback_enabling rollback_id=$rb_id msg=originalSessionId解析失败_请手动检查"
     return 0
@@ -1359,7 +1404,7 @@ check_rollback_disarm() {
   _ab_out=$(pm install-abandon "$rb_sid" 2>&1)
   _ab_rc=$?
   if [ "$_ab_rc" -eq 0 ] && [ "$_ab_out" = "Success" ]; then
-    _chk=$(dumpsys rollback 2>/dev/null | grep -A2 "^$rb_id:" | grep -c 'state: enabling')
+    _chk=$(grep -A2 "^$rb_id:" "$_rbdf" 2>/dev/null | grep -c 'state: enabling')
     case "$_chk" in ''|*[!0-9]*) _chk=1;; esac
     if [ "$_chk" -eq 0 ]; then
       echo "$(date '+%m-%d %H:%M:%S') rollback_id=$rb_id session=$rb_sid sess=$_sess_state" > "$ROLLBACK_DISARM_FLAG" 2>/dev/null
@@ -1458,21 +1503,32 @@ collect_stats() {
   _st_pid=$(cat "$PIDF" 2>/dev/null); _st_pid=${_st_pid%%:*}
   _st_state=stopped
   case "$_st_pid" in ''|*[!0-9]*) _st_pid=NA;; *) [ -d /proc/$_st_pid ] && _st_state=running;; esac
-  _st_shield=$(grep -c 'event=shield_activate' "$LOG" 2>/dev/null)
-  _st_storm=$(grep -c 'event=storm_start' "$LOG" 2>/dev/null)
-  _st_rogue=$(grep -cE 'event=cpu_rogue_intervene|event=cpu_extreme_intervene' "$LOG" 2>/dev/null)
-  _st_compact=$(grep -cE '内存压实完成|act=fg_compact .*result=ok' "$LOG" 2>/dev/null)
-  _st_blackbox=$(grep -c 'act=mem_blackbox' "$LOG" 2>/dev/null)
-  _st_crash=$(grep -c 'event=crash_detected' "$LOG" 2>/dev/null)
-  _st_rollback=$(grep -c 'event=rollback_disarm' "$LOG" 2>/dev/null)
-  _st_mjburst=$(grep -c 'warn=fg_majflt_burst' "$LOG" 2>/dev/null)
-  _st_bt=$(grep -cE 'act=bt_guard_on|act=bt2_guard_on' "$LOG" 2>/dev/null)
-  # P1(2026-11-05): 5 个此前面板不可见的能力计数（与 WebUI CARD_DEFS 一一对应）
-  _st_flush=$(grep -c 'act=flush_guard_on' "$LOG" 2>/dev/null)
-  _st_gcboost=$(grep -c 'act=gc_boost_on' "$LOG" 2>/dev/null)
-  _st_ssprobe=$(grep -c 'act=ss_heap_probe' "$LOG" 2>/dev/null)
-  _st_forecast=$(grep -cE 'warn=mem_forecast|act=forecast_compact' "$LOG" 2>/dev/null)
-  _st_bt3=$(grep -c 'act=bt3_guard_on' "$LOG" 2>/dev/null)
+  # v1.13.19: 14 次 grep -c（WebUI 每 30s 自刷新 = 每次 14 个 fork + 14 次 open）合并为
+  # 单次 awk 扫描。语义逐项等价：awk pattern-action 按行触发，与 grep -c 的"匹配行数"
+  # 一致；多模式用 || 组合，避免一行被计两次。中文字面量用 index() 而非正则，规避
+  # toybox awk 的 locale 差异。输出固定 14 个整数，顺序即下方 set -- 的赋值顺序。
+  _st_cnt=$(awk '
+    /event=shield_activate/ {sh++}
+    /event=storm_start/ {st++}
+    /event=cpu_rogue_intervene/ || /event=cpu_extreme_intervene/ {ro++}
+    (index($0,"内存压实完成")>0) || (/act=fg_compact/ && /result=ok/) {cp++}
+    /act=mem_blackbox/ {bb++}
+    /event=crash_detected/ {cr++}
+    /event=rollback_disarm/ {rb++}
+    /warn=fg_majflt_burst/ {mj++}
+    /act=bt_guard_on/ || /act=bt2_guard_on/ {bt++}
+    /act=flush_guard_on/ {fl++}
+    /act=gc_boost_on/ {gb++}
+    /act=ss_heap_probe/ {sp++}
+    /warn=mem_forecast/ || /act=forecast_compact/ {fc++}
+    /act=bt3_guard_on/ {b3++}
+    END {printf "%d %d %d %d %d %d %d %d %d %d %d %d %d %d\n", sh,st,ro,cp,bb,cr,rb,mj,bt,fl,gb,sp,fc,b3}
+  ' "$LOG" 2>/dev/null)
+  set -- $_st_cnt
+  _st_shield=${1:-0}; _st_storm=${2:-0}; _st_rogue=${3:-0}; _st_compact=${4:-0}
+  _st_blackbox=${5:-0}; _st_crash=${6:-0}; _st_rollback=${7:-0}; _st_mjburst=${8:-0}
+  _st_bt=${9:-0}; _st_flush=${10:-0}; _st_gcboost=${11:-0}; _st_ssprobe=${12:-0}
+  _st_forecast=${13:-0}; _st_bt3=${14:-0}
   for _k in _st_shield _st_storm _st_rogue _st_compact _st_blackbox _st_crash _st_rollback _st_mjburst _st_bt _st_flush _st_gcboost _st_ssprobe _st_forecast _st_bt3; do
     eval "v=\$$_k"; case "$v" in ''|*[!0-9]*) eval "$_k=0";; esac
   done
@@ -1521,6 +1577,12 @@ update_module_desc() {
   _tmp="$RUN/module.prop.tmp"
   awk -v nd="$_nd" '/^description=/{print nd; next} {print}' "$MODULE_PROP" > "$_tmp" 2>/dev/null || return 0
   [ -s "$_tmp" ] && mv "$_tmp" "$MODULE_PROP" 2>/dev/null
+  # v1.13.19: KernelSU 的管理器卡片读的是 ksud 覆盖层而非 module.prop，写完文件后再同步一次
+  # override.description，卡片才会立刻反映最新统计。失败静默——module.prop 始终是权威来源，
+  # ksud 缺失或子命令不支持时行为与旧版一致。
+  if [ -x /data/adb/ksud ]; then
+    /data/adb/ksud module config set --temp override.description "${_nd#description=}" >/dev/null 2>&1
+  fi
 }
 
 # v1.9.11: env_baseline —— 启动环境基线（每会话一次，S 级）
@@ -1537,6 +1599,95 @@ env_baseline() {
   if [ -n "$_lmk" ] || [ -n "$_bg" ]; then
     logx W "warn=props_tampered lmk_medium=${_lmk:-empty} bg_apps_limit=${_bg:-empty} note=LMK属性被外部注入_排查Scene类模块"
   fi
+}
+
+# v1.13.19: is_frozen_pid <pid> —— 零 fork 判定进程是否被 cgroup freezer 冻结。
+# 原理：Android 冻结态（NoActive 等）下任务停在 do_freezer_trap，/proc/<pid>/wchan 即该符号。
+# 用途：削峰/降权循环跳过已冻结进程——改 nice 对冻结任务无意义，解冻瞬间还会带来额外调度。
+# 失败安全：文件不可读或无内容一律返回 1（当作未冻结，按原逻辑处理，只漏优化不误伤）。
+is_frozen_pid() {
+  [ -r "/proc/$1/wchan" ] || return 1
+  _fz_w=""
+  IFS= read -r _fz_w < "/proc/$1/wchan" 2>/dev/null
+  case "$_fz_w" in
+    *do_freezer_trap*) return 0 ;;
+  esac
+  return 1
+}
+
+# v1.13.19: shield_fg_restore —— FR-9 护盾提权残留还原。
+# 背景：护盾在 sleep 15 期间若被 kill -9 / 卸载 / 崩溃，内存态 sf_orig/fg_orig/rt_orig
+# 全部丢失，SurfaceFlinger 与前台主线程会永久停在 -15（nice 只提不降，越积越高）。
+# 落盘格式：<kind> <pid/tid> <orig_nice>，kind ∈ sf|fg|rt。启动自愈、stop、uninstall 共用。
+shield_fg_restore() {
+  [ -s "$RUN/shield_fg.bak" ] || return 0
+  _sfr=0
+  while read -r _sfr_k _sfr_p _sfr_o; do
+    case "$_sfr_p" in ''|*[!0-9]*) continue;; esac
+    case "$_sfr_o" in ''|*[!0-9-]*) continue;; esac
+    [ -d "/proc/$_sfr_p" ] || continue
+    _sfr_c=$(nice_of "$_sfr_p"); [ -n "$_sfr_c" ] || continue
+    [ "$_sfr_c" = "$_sfr_o" ] && continue
+    renice -n $((_sfr_o - _sfr_c)) -p "$_sfr_p" >/dev/null 2>&1 && _sfr=$((_sfr+1))
+  done < "$RUN/shield_fg.bak"
+  rm -f "$RUN/shield_fg.bak" 2>/dev/null
+  [ "$_sfr" -gt 0 ] && logx A "act=shield_fg_restore restored=$_sfr msg=护盾提权残留已还原"
+  return 0
+}
+
+# v1.13.19: restore_all_on_exit —— stop / uninstall 共用的唯一清场序列。
+# 由来：v1.13.16 B0 在两处各自补了一部分（B0 补 gc_boost/camera_affinity/affinity 清单），
+# 结果形成"补了 A 漏了 B"的结构性隐患——11-08 审计实测 uninstall.sh 的 pkill 数为 0，
+# cpu_guard / fluency_shield / vk_injector 会在卸载后继续运行且清单被 rm -rf run 删光。
+# 约定：本函数只负责"还原"，不负责"终止进程"；终止由调用方先行完成。
+# 调用前提：已 source mt_lib.sh（uninstall.sh 已满足），$RUN 存在。
+restore_all_on_exit() {
+  storm_restore_pending manual_stop 2>/dev/null
+  flush_guard_restore               2>/dev/null
+  bt_guard_restore                  2>/dev/null
+  bt2_guard_restore                 2>/dev/null
+  camera_vip_off                    2>/dev/null
+  camera_affinity_off               2>/dev/null
+  gc_boost_off                      2>/dev/null
+  shield_fg_restore                 2>/dev/null
+  # 核亲和约束：v1.13.19 起统一写 cgroup.procs（见 cpu_guard.sh 同名迁移说明）
+  if [ -s "$RUN/affinity_constrained.lst" ]; then
+    while read -r _ra_pid _ra_pkg _ra_orig; do
+      case "$_ra_pid" in ''|*[!0-9]*) continue;; esac
+      case "$_ra_orig" in ''|*[!a-zA-Z0-9_-]*) continue;; esac
+      [ -d "/proc/$_ra_pid" ] || continue
+      echo "$_ra_pid" > "/dev/cpuset/$_ra_orig/cgroup.procs" 2>/dev/null
+    done < "$RUN/affinity_constrained.lst"
+    rm -f "$RUN/affinity_constrained.lst" 2>/dev/null
+  fi
+  # CPU 毒瘤降权
+  if [ -s "$RUN/cpu_rogue_renice.lst" ]; then
+    while read -r _rr_tid _rr_on _rr_pkg; do
+      case "$_rr_tid" in ''|*[!0-9]*) continue;; esac
+      [ -d "/proc/$_rr_tid" ] || continue
+      _rr_cur=$(nice_of "$_rr_tid"); [ -n "$_rr_cur" ] || continue
+      renice -n $((_rr_on - _rr_cur)) -p "$_rr_tid" >/dev/null 2>&1
+    done < "$RUN/cpu_rogue_renice.lst"
+    rm -f "$RUN/cpu_rogue_renice.lst" 2>/dev/null
+  fi
+  # FR-RN1 雷鸟降权：v1.13.19 用默认 IFS 读 Tgid（原 IFS=' ' 不拆 Tab，100% 跳过）
+  if [ -s "$RUN/rayneo_governor.lst" ]; then
+    _ra_rp=$(pidof "$RAYNEO_PKG" 2>/dev/null); _ra_rp=${_ra_rp%% *}
+    while read -r _rr_tid _rr_on _rr_comm; do
+      case "$_rr_tid" in ''|*[!0-9]*) continue;; esac
+      [ -d "/proc/$_rr_tid" ] || continue
+      _rr_tg=""
+      while read -r _rr_k _rr_v _; do
+        [ "$_rr_k" = "Tgid:" ] && { _rr_tg=$_rr_v; break; }
+      done < "/proc/$_rr_tid/status" 2>/dev/null
+      case "$_rr_tg" in ''|*[!0-9]*) continue;; esac
+      { [ -n "$_ra_rp" ] && [ "$_rr_tg" = "$_ra_rp" ]; } || continue
+      _rr_cur=$(nice_of "$_rr_tid"); [ -n "$_rr_cur" ] || continue
+      renice -n $((_rr_on - _rr_cur)) -p "$_rr_tid" >/dev/null 2>&1
+    done < "$RUN/rayneo_governor.lst"
+    rm -f "$RUN/rayneo_governor.lst" "$RUN/rayneo_notified" 2>/dev/null
+  fi
+  return 0
 }
 
 if [ "$(basename "$0")" = "mt_lib.sh" ]; then

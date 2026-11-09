@@ -2,6 +2,7 @@
 
 | 版本 | 日期 | 关键变更 |
 |---|---|---|
+| **v1.13.19** | 2026-11-09 | 外部审计 9 项修复：Tgid Tab（`restored` 0→3）、cpuset 改 `cgroup.procs`、卸载补 4 条 pkill、`renice` 增量语义 + SF 提权守卫、`mem_forecast` 读实时值、`am` 加 `timeout 2`、`rollback` 单次采集、`collect_stats` 单 awk、`is_frozen_pid`、护盾息屏降频、`child_heal` 自愈、KernelSU 热安装；WebUI 阈值对齐 450/460/470/496。**新发现 P0（未修）**：FR-4 毒瘤检测自 v1.9.9 失效，1349 次扫描 0 次干预 |
 | **v1.13.18** | 2026-11-08 | **FR-RN1 首次启用**（批量 renice，cpu_scan 340–730ms）+ WebUI 健康分首屏 + 折叠 6→4 |
 | v1.13.17 | 2026-11-08 | FR-RN1 批量 renice（首次通过验收）；含 v1.13.16 还原完整性与零 fork 修复 |
 | v1.13.15 | 2026-11-08 | 审计后纯降本：堆探测门控（RSS<30MB 变化且 PSI<5% 跳过 dumpsys，消除 9s 级尖峰）、扫描日志降频、快照限流（危机态不限）、护航复用前台采样 |

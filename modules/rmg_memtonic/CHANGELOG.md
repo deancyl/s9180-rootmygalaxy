@@ -2,6 +2,75 @@
 
 ---
 
+## [v1.13.19] - 2026-11-09
+
+> 外部审计 9 项修复 + 生命周期与还原完整性收口。本版**不改阈值、不改功能语义**，只修正确性：
+> 上一版存在 Tgid Tab 解析 100% 失败（导致每分钟全量重复降权）、cpuset 只迁主线程、
+> renice 增量语义误用、卸载不终止子进程等确定性缺陷。
+
+### 破坏性（行为正确性）
+
+- **P0-1 Tgid Tab 分隔符**（`cpu_guard.sh`）：`IFS=' '` 显式空格不拆 `/proc/<tid>/status` 的
+  `Tgid:\t<pid>`，`_tg` 恒空 → `rayneo_restore_all` 100% 跳过（`restored=0`）；死条目清理每轮把
+  `RN_STATE` 清空 → 已降权线程"失忆"→ 每分钟全量重复降权。改默认 IFS；并把 memo 检测
+  （原独立遍历 161 线程）并入降权循环，单轮 `/proc` 读减半。
+- **P0-2 cpuset 只迁主线程**（`cpu_guard.sh`）：`/dev/cpuset/*/tasks` 按线程写，写 tgid 只迁主线程，
+  工作线程仍留在 foreground。改 `cgroup.procs`（按线程组整迁），stop/uninstall 同步。
+- **P0-3 卸载不终止子进程**（`uninstall.sh`）：原实现只 kill 2 个 pid 文件、`pkill` 数为 0，且随后
+  `rm -rf run` 删光清单 → `cpu_guard` / `fluency_shield` / `vk_injector` 变孤儿且无法还原。
+  补全 4 个 pid 文件 + 4 条 pkill；清场改在 `rm -rf run` 之前。
+- **P0-4 `service.sh` 幂等只认主进程**：主进程死、子守护存活时重拉会产生双实例。异常终止
+  （pid 文件存在但进程不在）先清场再拉起；冷启动不清场以免误杀。
+- **P1-1 renice 增量语义误用**：`renice -n` 是"增加"不是"设为"。`rogue_throttle` 的 `-n 10`
+  会把 nice=5 的线程推到 15；`fluency_shield` 的 SurfaceFlinger 提权 `-n -15` 会在已提权的 SF 上
+  叠成 -25。改为增量补齐到目标值，并补 `> -15` 守卫。
+- **P1-2 护盾提权不持久化**：`sleep 15` 期间被 kill -9 则 SF / 前台主线程永久停在 -15。
+  新增 `run/shield_fg.bak`，启动自愈 / stop / uninstall 统一还原（`shield_fg_restore`）。
+- **P1-3 mem_forecast 旧值**：预测态只在首次写 flag，`avail_kb` 永久冻结 → 实际可用 2.4GB 仍触发
+  亮屏压实。改为持续刷新 + 压实判定读实时 `MemAvailable`，并要求亮屏时 mem PSI ≥10。
+
+### 效率与健壮性
+
+- `ss_heap_relief` 的 `am send-trim-memory` 加 `timeout 2`（缺失时自动降级），防止 binder 挂死把
+  `cpu_guard` 主循环整段拖住。
+- `dumpsys rollback` 改单次采集 + 60s 复用（`rollback_dump_get`），staged 巡检与 disarm 巡检共用，
+  省 3-5 次重复 binder（同时规避 ARG_MAX）。
+- `collect_stats` 的 14 次 `grep -c` 合并为单次 `awk`，键名与顺序完全不变。
+- 新增 `is_frozen_pid()`（读 `/proc/<pid>/wchan` 判 `do_freezer_trap`），供削峰路径跳过 NoActive
+  已冻结进程。
+- `fluency_shield` 息屏降频：息屏且蓝牙 / 相机 / 截屏均空闲时，跳过 10s 焦点采样与截屏目录扫描。
+- `cpu_guard` 每 60s 检查 `fluency_shield` / `storm_guard` 存活（pid 文件存活时零 fork），
+  失活才用 `pgrep` 复核并重拉（`child_heal`）。初版无条件 `pgrep -f` 会全盘扫
+  `/proc/*/cmdline`，实测把 `cpu_scan` 从 190–270ms 抬到 440–700ms，已改为条件触发。
+
+### 一致性
+
+- WebUI 阈值文案全部对齐当前常量（450 泄压 / 460 GC 加速 / 470 告警 / 496 OOM，GC 提权 -15 绑大核），
+  修正 `INFO_DEFS.heap`、`INFO_DEFS.crisis`、`CARD_DEFS` gcboost、`heapBand()` 标签。
+- 修正 `healthScore()` 的比较基数：原 `heapMB >= 481` 实为 481MB（=492544KB），高过 470MB 告警线；
+  改为直接用 KB 常量比较，消除 MB 换算漂移。
+
+### 验证
+
+- 单测见 `.t/webui_p0_test.js`（289/289）；真机部署与验收数据见
+  `docs/progress/2026-11-09-memtonic-v1.13.19.md`。
+
+### 已知缺陷（本版未修，需独立一版）
+
+- **FR-4「CPU 毒瘤检测」自 v1.9.9 起完全失效**：`snapshot_app_pids()` 的 awk 从未给 `pid`
+  赋值，**且**依赖 `/proc/<pid>/status` 末尾的空行做分隔（实际 status 没有末尾空行）——
+  两个缺陷任一都足以让输出恒为空。
+  真机实测（v1.13.19 部署后）：原函数输出 **0 行**；日志累计 `cpu_scan` **1349 次**、
+  `cpu_rogue_intervene` **0 次**。也就是说 `scan_cpu_rogue` 的主循环从未执行过，
+  面板上的「毒瘤降权 0」是「从未扫描」而不是「没有毒瘤」。
+  实测可用修法：`FNR==1` 用 `split(FILENAME,…)` 取 pid、`/^Uid:/` 行直接判断是否 ≥10000
+  （95 个进程，158ms）；ticks 改为单次 awk 扫全部 `/proc/*/stat`（85ms），替代逐 pid
+  `cpu_ticks_of`（95 次 × 16ms ≈ 1.5s）。
+  本版不改这套扫描架构：它会改变 `take_ticks_snapshot` / `scan_cpu_rogue` 的数据结构，
+  与本次 9 项修复混在一起将无法归因，单独一版处理更稳妥。
+
+---
+
 ## [v1.13.18] - 2026-11-08
 
 > C 阶段：WebUI 收敛。审计发现"堆 223MB 显示正常、但整机物理内存已用 99.3%"的误判风险——首屏只有堆水位，看不到真正压力。

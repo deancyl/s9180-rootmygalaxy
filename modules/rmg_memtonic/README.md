@@ -1,8 +1,10 @@
 # RMG MemTonic —— SM-S9180 内存与异常守护模块
 
-- 模块 ID：`rmg_memtonic` ｜ 版本：v1.13.13 ｜ 适用：Galaxy S23 Ultra（SM-S9180，dm3q）KernelSU 临时 Root（late-load）方案
+- 模块 ID：`rmg_memtonic` ｜ 版本：v1.13.19 ｜ 适用：Galaxy S23 Ultra（SM-S9180，dm3q）KernelSU 临时 Root（late-load）方案
 
 ## 版本历史
+
+- **v1.13.19（2026-11-09）**：外部审计 9 项修复 + 生命周期收口（**不改阈值、不改功能语义**）。① **Tgid Tab 分隔符**——`IFS=' '` 不拆 `/proc/<tid>/status` 的 `Tgid:\t<pid>`，`rayneo_restore` 100% 返回 `restored=0`，且每轮把 `RN_STATE` 清空导致重复降权；真机新旧并排对比 4/4 `old=[] new=[19615]`，修复后实测 `restored=3`（写入 3 条、还原 3 条）。② **cpuset 全线程迁移**——`tasks` 只迁主线程，改 `cgroup.procs`。③ **卸载不终止子进程**——`uninstall.sh` 原 `pkill` 数为 0，`cpu_guard`/`fluency_shield`/`vk_injector` 会变孤儿且清单被 `rm -rf run` 删光；补 4 条 pkill 并把清场前移到删目录之前。④ **`service.sh` 漏看子进程**——异常终止后重拉会产生双实例，改为先清场再拉起。⑤ **`renice` 增量语义**——`rogue_throttle` 的 `-n 10` 与 SurfaceFlinger 提权 `-n -15` 会在已有 nice 上继续叠加（实测可到 -25），改 delta 换算 + `> -15` 守卫；护盾提权落盘 `shield_fg.bak` 供自愈/停止还原。⑥ **`mem_forecast` 旧值**——预测态只在首次落盘，压实判定读的是几小时前的 `avail_kb`；改持续刷新 + 读实时 `MemAvailable` + 亮屏需 mem PSI≥10。⑦ 减负：`am` 加 `timeout 2`、`dumpsys rollback` 单次采集 60s 复用、`collect_stats` 14 次 `grep -c` 合单次 awk、`is_frozen_pid` 跳过冻结进程、护盾息屏降频、`child_heal` 子守护自愈（pid 存活时零 fork）。⑧ KernelSU 规范：`MODDIR=${0%/*}`、`customize.sh` + `hotinstall.sh` 支持热安装、`ksud module config set --temp override.description`。⑨ WebUI 阈值文案对齐 450/460/470/496，并修 `healthScore` 把 470MB 误写成 481MB。单测 **289/289**；真机部署 8 步全绿，探针确认 `renice -n` 为**增量语义**。**诚实边界**：`cpu_scan` p50=590ms 未达 300ms 目标（与 v1.13.18 的 340–730ms 同区间，非退步）；**新发现 P0——FR-4 毒瘤检测自 v1.9.9 起完全失效**（`snapshot_app_pids` 的 awk 从未给 `pid` 赋值，且依赖并不存在的 status 末尾空行；1349 次扫描 0 次干预），本版未修，留独立一版处理。
 
 - **v1.13.18（2026-11-08）**：**FR-RN1 首次成功启用** + WebUI 健康分。① FR-RN1 真因是"写"不是"读"——降权循环对 181–221 个线程逐个 `renice`（每次一个 fork）+ 每 tid 一次 `grep -q` + 每线程一条日志 ≈ 600 fork/轮；实机验证 toybox `renice` 支持多 PID 后改为按 nice 分桶批量调用、查重集合入内存、日志每轮一条，`cpu_scan` 从 1770–13010ms（v1.13.13，验收 0/5）→ **340–730ms**（5 轮验收 0 bad），实测 161 个 RayNeo 线程中 32 个降至 nice=10。② WebUI 健康分首屏：可用内存/堆/swap/mem PSI/CPU PSI 综合 0–100 分 + 一句人话，解决"堆 249MB 正常但物理内存 99.3% 用满"的误判；`collect_stats` 新增 `swap_total_kb`/`swap_free_kb`/`cpu_psi_s10`；折叠区 6→4。单测 266/266；模块总 RSS 12.8MB、CPU 1.5% 单核；快照 628→257（7 天清理生效）。**诚实边界**：cpu_scan 340–730ms 仍高于 300ms 目标（memo 探针与降权循环各遍历 161 线程一次），`drop_caches` 仍未实弹触发。
 
