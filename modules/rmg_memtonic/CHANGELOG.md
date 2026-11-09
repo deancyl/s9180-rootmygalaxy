@@ -14,7 +14,16 @@
 - **KSU_MODULE 环境变量补齐**（`mt_lib.sh`）：`update_module_desc` 调用 `/data/adb/ksud module config set` 时显式注入 `KSU_MODULE=rmg_memtonic`，避免手动 Shell 或 WebUI 刷新时因缺少上下文导致卡片覆盖层设置失败。
 - **版本号引用动态化与残留清理**：
   - `memtonic.sh` 与 `fluency_shield.sh` 启动日志消除硬编码 `ver=1.13.18`，统一改为 `${MT_VERSION#v}`。
+  - `fluency_shield.sh` 脚本头注释版本号同步更新至 `v1.13.20`。
   - 清理发布目录调试残留：移除 `.bak-1319-pre/`、`.t/` 测试目录以及 `scripts/zz_probe.sh`。
+- **KernelSU WebUI 权限隔离规范**（`customize.sh`）：移除 `set_perm_recursive "$PM" 0 0 0755 0644`，仅保留 `scripts` 的递归设置，并对各顶层脚本和文档逐一赋权，严禁触碰 `webroot` 目录及其 SELinux 上下文，完全符合 KernelSU 官方规范。
+- **PID 复用与活跃换皮缓存污染防御**（`cpu_guard.sh`）：
+  - 当 `delta < 0`（ticks 回退）时，显式 `unset` 该 PID 的旧状态与包名缓存 `_pkg_${pid}`；
+  - 对活跃进程（`delta > 0`）实时通过 `pkg_of` 校验最新包名；当检测到包名漂移（PID 被新进程复用换皮）时立即清空旧状态并重新初始化；
+  - 死线程清理循环中补齐 `unset _pkg_${tid}`，杜绝历史包名变量无限泄漏。
+- **pkg_of NUL 字节截断与 ash 兼容性重构**（`mt_lib.sh`）：改用 `read -r -d ''` 精准截断 `/proc/<pid>/cmdline` 首段参数，彻底消除多参数连缀导致包名提取异常的隐患，并在不支持 `-d` 时保留零 fork fallback。
+- **冗余启动全盘扫描剥离**（`cpu_guard.sh`）：移除 L806-807 无用的 `snapshot_app_pids` 调用，直接调用 `take_ticks_snapshot` 一步到位。
+- **清理重复全局常量**（`cpu_guard.sh`）：移除脚本内重复定义的 `RAYNEO_PKG`，统一继承 `mt_lib.sh`。
 
 ### FR-4 恢复与零 fork 性能攻坚
 

@@ -7,16 +7,19 @@ command -v ui_print >/dev/null 2>&1 && ui_print "- RMG MemTonic v1.13.20 (vc60)"
 PM=${MODPATH:-$MODDIR}
 if [ -n "$PM" ] && [ -d "$PM" ]; then
   if command -v set_perm_recursive >/dev/null 2>&1; then
-    set_perm_recursive "$PM" 0 0 0755 0644
+    # 严格遵循 KernelSU 官方规范：绝不触碰 webroot 目录及其 SELinux 标签
     set_perm_recursive "$PM/scripts" 0 0 0755 0755
     set_perm "$PM/service.sh" 0 0 0755
     set_perm "$PM/uninstall.sh" 0 0 0755
     set_perm "$PM/customize.sh" 0 0 0755
     set_perm "$PM/hotinstall.sh" 0 0 0755
+    set_perm "$PM/module.prop" 0 0 0644
+    set_perm "$PM/README.md" 0 0 0644
+    set_perm "$PM/CHANGELOG.md" 0 0 0644
   else
     chmod 0755 "$PM" "$PM/scripts" 2>/dev/null
-    chmod 0755 "$PM"/*.sh "$PM"/scripts/*.sh 2>/dev/null
-    chmod 0644 "$PM"/module.prop "$PM"/CHANGELOG.md 2>/dev/null
+    chmod 0755 "$PM/service.sh" "$PM/uninstall.sh" "$PM/customize.sh" "$PM/hotinstall.sh" "$PM/scripts"/*.sh 2>/dev/null
+    chmod 0644 "$PM/module.prop" "$PM/README.md" "$PM/CHANGELOG.md" 2>/dev/null
   fi
 fi
 

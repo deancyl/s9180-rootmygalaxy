@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# fluency_shield.sh —— RMG MemTonic 前台护盾 (FR-9) + Camera Sentinel + Screenshot Sentinel + BT Sentinel + FR-C3 Flush Sentinel (v1.13.18)
+# fluency_shield.sh —— RMG MemTonic 前台护盾 (FR-9) + Camera Sentinel + Screenshot Sentinel + BT Sentinel + FR-C3 Flush Sentinel (v1.13.20)
 # FR-9: PSI 内存压力飙升时精准提权前台渲染链（SurfaceFlinger + 主线程 + RenderThread）。
 # FR-C Camera Sentinel: 每 5 秒嗅探 media.camera，相机激活时提权 HAL 服务。
 # FR-S Screenshot Sentinel: 监控截屏目录文件数，截屏后 30 秒内对前台 App 提权防卡顿。

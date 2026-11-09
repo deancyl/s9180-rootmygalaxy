@@ -200,7 +200,7 @@ EOF
 # v1.13.12 判定链顺序（顺序不可交换）：disable flag → 进程存在 → memo 激活（P1-5）
 # → 眼镜活跃（P0-2）→ 死条目 Tgid 清理（P0-1）→ [storm 模式止步（P1-3）] → 降权循环。
 # memo 检查必须在 adj 检查之前：memo 激活必有 FGS → adj 低，adj 先行会短路 memo 门控。
-RAYNEO_PKG="com.rayneo.venus.pub"
+# v1.13.20: RAYNEO_PKG 已移入 mt_lib.sh 全局常量，避免局部重复定义与不同步
 RN_STATE=$RUN/rayneo_governor.lst
 RAYNEO_TARGET_NICE=10
 RAYNEO_MEMO_THREAD="AlwaysOnAiRunti"   # v1.13.12(P1-5): VAD 载体线程名（comm 截断 15 字符）
@@ -347,7 +347,11 @@ scan_cpu_rogue() {
     eval "_ticks_${pid}=$new_ticks"
     [ -z "$prev" ] && continue       # 新进程首次出现，仅记录基线
     delta=$((new_ticks - prev))
-    [ "$delta" -lt 0 ] && continue   # PID 复用（进程已替换），跳过
+    if [ "$delta" -lt 0 ]; then
+      # v1.13.20 修复：PID 复用（进程已替换，ticks 发生回退），彻底清除旧缓存变量防止污染
+      eval "unset _hcnt_${pid} _lcnt_${pid} _rogue_${pid} _aff_${pid} _pkg_${pid}"
+      continue
+    fi
 
     eval "throttled=\${_rogue_${pid}:-0}"
 
@@ -370,12 +374,14 @@ scan_cpu_rogue() {
     fi
 
     # 活动进程：完整判定（pkg 解析 + 豁免 + 阈值）
-    # v1.13.20: 包名一级缓存，避免活跃进程每轮重复调用 pkg_of
-    eval "pkg=\${_pkg_${pid}:-}"
-    if [ -z "$pkg" ]; then
-      pkg=$(pkg_of "$pid"); [ -n "$pkg" ] || continue
-      eval "_pkg_${pid}=\$pkg"
+    # v1.13.20 修复：对活跃进程直接校验最新包名，防范 PID 复用后 new_ticks > prev 导致的旧包名缓存污染
+    pkg=$(pkg_of "$pid"); [ -n "$pkg" ] || continue
+    eval "old_pkg=\${_pkg_${pid}:-}"
+    if [ -n "$old_pkg" ] && [ "$old_pkg" != "$pkg" ]; then
+      # 检出 PID 复用换皮（包名发生变更）：清理旧包名的所有累加与状态
+      eval "unset _hcnt_${pid} _lcnt_${pid} _rogue_${pid} _aff_${pid}"
     fi
+    eval "_pkg_${pid}=\$pkg" 
 
     # v1.13.10: 被约束的应用成为焦点 → 立即还原（用户正在使用，交还大核）
     eval "aff=\${_aff_${pid}:-0}"
@@ -802,9 +808,8 @@ cce_watch() {
 
 # ---- 初始化 ----
 init_dropbox_state
-# v1.9.9: 启动时先批量拿一次 app_pids，take_ticks_snapshot 与 scan_cpu_rogue 共用
-_init_app_list=$(snapshot_app_pids)
-take_ticks_snapshot "$_init_app_list"
+# v1.13.20 修复：启动直接建立 ticks 基线快照（单次 awk 批量读取，移除多余的 snapshot_app_pids 遍历）
+take_ticks_snapshot
 
 # v1.13.19: 子守护自愈——fluency_shield / storm_guard 意外死亡（被 OOM 杀、异常退出）时
 # 由本循环重新拉起。原实现只靠 memtonic.sh 主进程 1h 粒度的粗略看护，而 service.sh 的
@@ -854,7 +859,8 @@ while kill -0 "$PPID" 2>/dev/null; do
       if [ -d "/proc/$tid" ]; then
         echo "$tid $on $rpkg" >> "$tmpf" 2>/dev/null
       else
-        eval "unset _ticks_${tid} _hcnt_${tid} _rogue_${tid} _lcnt_${tid}"
+        # v1.13.20 修复：补齐 unset _pkg_${tid}，防止已消亡进程的包名缓存无限膨胀
+        eval "unset _ticks_${tid} _hcnt_${tid} _rogue_${tid} _lcnt_${tid} _pkg_${tid}"
       fi
     done < "$ROGUE_LST"
     if [ -f "$tmpf" ]; then mv "$tmpf" "$ROGUE_LST" 2>/dev/null; else rm -f "$ROGUE_LST" 2>/dev/null; fi

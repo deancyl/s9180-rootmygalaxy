@@ -223,14 +223,21 @@ pid_starttime() { awk '{print $22}' /proc/$1/stat 2>/dev/null; }
 
 # v1.13.20: pkg_of <pid>——零 fork 提取应用包名（cmdline 首段，去掉 :子进程后缀与空格参数）
 # 原实现每次调用启动 strings | head | cut（3 次 fork ≈ 15ms），在遍历活跃应用时成为瓶颈；
-# 改为 mksh 内建 read 直接读取 /proc/<pid>/cmdline，单次 <0.1ms，90 进程批量降级为毫秒级。
+# 改为 read -r -d '' 直接截断 /proc/<pid>/cmdline 第一段参数，彻底规避 NUL 字符拼接多参数的风险；
+# 并在 shell 不支持 -d '' 时优雅 fallback 到普通 read -r。
 pkg_of() {
+  _pkg_name=""
   [ -r "/proc/$1/cmdline" ] || return 1
   _po_raw=""
-  IFS= read -r _po_raw < "/proc/$1/cmdline" 2>/dev/null
+  IFS= read -r -d '' _po_raw < "/proc/$1/cmdline" 2>/dev/null
+  if [ -z "$_po_raw" ]; then
+    IFS= read -r _po_raw < "/proc/$1/cmdline" 2>/dev/null
+  fi
   [ -n "$_po_raw" ] || return 1
   _po_raw=${_po_raw%%:*}
-  echo "${_po_raw%% *}"
+  _pkg_name="${_po_raw%% *}"
+  echo "$_pkg_name"
+  return 0
 }
 
 # is_app_uid <pid>：uid>=10000（u0_a* 应用）时回显 uid，否则输出空

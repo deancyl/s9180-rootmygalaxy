@@ -25,8 +25,12 @@
 
 - **`RAYNEO_PKG` 作用域修复**（`mt_lib.sh`）：将包名常量上移至 `mt_lib.sh` 顶部全局常量区，修复 `restore_all_on_exit` 无法读取雷鸟 PID 导致 stop/uninstall 100% 跳过雷鸟线程还原的缺陷。
 - **补齐 `KSU_MODULE` 环境变量**（`mt_lib.sh`）：`update_module_desc` 调用 `ksud module config set` 时显式注入 `KSU_MODULE=rmg_memtonic`，确保手动 Shell 与 WebUI 刷新时卡片覆盖层设置成功。
-- **消除硬编码版本**：`memtonic.sh` 与 `fluency_shield.sh` 启动日志中的 `ver=1.13.18` 改为动态 `${MT_VERSION#v}`。
-- **清理调试残留**：移除发布包内的 `.bak-1319-pre/`、`.t/` 目录与 `scripts/zz_probe.sh`。
+- **消除硬编码版本**：`memtonic.sh` 与 `fluency_shield.sh` 启动日志中的 `ver=1.13.18` 改为动态 `${MT_VERSION#v}`；同步更新 `fluency_shield.sh` 头部版本。
+- **清理调试残留**：移除发布包内的 `.bak-1319-pre/`、`.t/` 目录与 `scripts/zz_probe.sh`；移除 `cpu_guard.sh` 内重复的 `RAYNEO_PKG`。
+- **KernelSU WebUI 权限隔离规范**（`customize.sh`）：遵循官方规范，移除顶层递归权限覆盖，绝不触碰 `webroot` 目录及其 SELinux 标签。
+- **PID 复用换皮与死线程缓存泄漏修复**（`cpu_guard.sh`）：在 `delta < 0` 时清除旧状态与 `_pkg_`；对 `delta > 0` 的活跃进程实时校验包名，包名变动时立即重置状态；死线程清理补齐 `unset _pkg_${tid}`。
+- **pkg_of NUL 字节截断重构**（`mt_lib.sh`）：改用 `read -r -d ''` 截断 `/proc/<pid>/cmdline` 首段参数并设计零 fork fallback，规避多参数拼接风险。
+- **启动冗余扫描剥离**（`cpu_guard.sh`）：移除 L806-807 无用的 `snapshot_app_pids` 调用，直接调用 `take_ticks_snapshot`。
 
 ## 验证与性能实测数据
 
