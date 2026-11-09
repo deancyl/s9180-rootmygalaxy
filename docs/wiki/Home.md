@@ -13,7 +13,7 @@ MemTonic 是配套 **RootMyGalaxy 临时 root 环境**使用的 KernelSU 模块�
 
 ## 当前版本
 
-**v1.13.14**（2026-11-08）：FR-SS 六项硬化 + WebUI 时效化与 CSS 修复。详见 [Release](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.14)。
+**v1.13.20 (vc60)**（2026-11-09）：外部复核收尾热修 + **FR-4 毒瘤检测全面恢复与全链路零 fork 极速重构**。详见 [Release](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.20)。
 
 ## 一分钟状态自检
 
@@ -21,7 +21,7 @@ MemTonic 是配套 **RootMyGalaxy 临时 root 环境**使用的 KernelSU 模块�
 su -c 'sh /data/adb/modules/rmg_memtonic/scripts/memtonic.sh status'
 ```
 
-或打开 KernelSU 管理器 → 模块 → RMG MemTonic → WebUI。首屏应看到三个状态胶囊：**保护 4/4 / 权限 正常 / 版本 v1.13.14**。
+或打开 KernelSU 管理器 → 模块 → RMG MemTonic → WebUI。首屏应看到三个状态胶囊：**保护 4/4 / 权限 正常 / 版本 v1.13.20**。
 
 ## 一句话定位
 
