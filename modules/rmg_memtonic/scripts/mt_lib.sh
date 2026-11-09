@@ -39,7 +39,9 @@ MODDIR="${SCRIPT_DIR%/*}"
 RUN=$MODDIR/run          # 运行时私有目录（root 700）
 LOG=$RUN/memtonic.log    # 审计日志（超 512KB 字节基准截断，v1.13.0: 256KB→512KB 保住更长取证窗口）
 MODULE_PROP=$MODDIR/module.prop  # v1.11.0: 模块声明文件（卡片描述动态统计的写入目标）
-MT_VERSION=v1.13.19              # v1.13.13: 模块版本（与 module.prop 同步，动态描述引用）
+MT_VERSION=v1.13.20              # v1.13.20: 模块版本（与 module.prop 同步，动态描述引用）
+# v1.13.20: 雷鸟穿戴应用包名常量（供 cpu_guard 与 restore_all_on_exit 共享，避免局部变量作用域丢失导致卸载/停止漏还原）
+RAYNEO_PKG="com.rayneo.venus.pub"
 
 # v1.13.19: am 走 binder 到 system_server，堆濒死时该调用会挂死（11-07 取证 22/22 fail
 # 且每次阻塞到超时）。有 timeout 就包一层，把单次上限压到 2s，防止 cpu_guard 主循环被
@@ -219,8 +221,17 @@ psi_mem_pressure_high() {
 # 进程启动时间（/proc/pid/stat 第 22 字段），用于 PID 复用防护
 pid_starttime() { awk '{print $22}' /proc/$1/stat 2>/dev/null; }
 
-# pkg_of <pid>：应用包名（cmdline 首段，去掉 :子进程后缀）
-pkg_of() { strings /proc/$1/cmdline 2>/dev/null | head -n 1 | cut -d: -f1; }
+# v1.13.20: pkg_of <pid>——零 fork 提取应用包名（cmdline 首段，去掉 :子进程后缀与空格参数）
+# 原实现每次调用启动 strings | head | cut（3 次 fork ≈ 15ms），在遍历活跃应用时成为瓶颈；
+# 改为 mksh 内建 read 直接读取 /proc/<pid>/cmdline，单次 <0.1ms，90 进程批量降级为毫秒级。
+pkg_of() {
+  [ -r "/proc/$1/cmdline" ] || return 1
+  _po_raw=""
+  IFS= read -r _po_raw < "/proc/$1/cmdline" 2>/dev/null
+  [ -n "$_po_raw" ] || return 1
+  _po_raw=${_po_raw%%:*}
+  echo "${_po_raw%% *}"
+}
 
 # is_app_uid <pid>：uid>=10000（u0_a* 应用）时回显 uid，否则输出空
 is_app_uid() {
@@ -234,12 +245,15 @@ nice_of() {
   # v1.13.16 B1: 零 fork 读 /proc/<pid>/stat 的 nice（原 awk 子进程在换页风暴下单次
   # 可达 5-10ms，一次 renice 循环几十次即数百 ms）。字段布局：pid (comm) state ...，
   # comm 可能含空格与括号 → 用最后一个 ") " 之后切分；去掉 pid+comm 后 nice 是第 17 个。
+  # v1.13.20: 同步设置 _nice_val 变量，允许内部调用者直接取值、免除 $(nice_of) 的子 shell fork。
+  _nice_val=""
   [ -r "/proc/$1/stat" ] || { echo ""; return 1; }
   IFS= read -r _ns < "/proc/$1/stat" 2>/dev/null || { echo ""; return 1; }
   _nr=${_ns##*) }
   [ -n "$_nr" ] || { echo ""; return 1; }
   set -- $_nr
   case "${17:-}" in ''|*[!0-9-]*) echo ""; return 1;; esac
+  _nice_val="${17}"
   echo "${17}"
   return 0
 }
@@ -276,9 +290,12 @@ is_foreground_service() {
 # 检查进程是否在 Android top-app cgroup（内核认为的最高优先级进程组）
 # 用于 cpu_guard 豁免：系统本身认为是 top-app 的进程做合法 CPU 密集工作时，不应被惩罚
 # 场景：微信截图后后台解码、钉钉消息处理、浏览器 JIT 等
+# v1.13.20: 零 fork 读 /proc/$1/cpuset（原 $(cat) 每次启动 2 个子进程，活跃循环触发几十次）
 is_in_top_app_cgroup() {
-  cpuset=$(cat /proc/$1/cpuset 2>/dev/null)
-  case "$cpuset" in /top-app*) return 0;; esac
+  [ -r "/proc/$1/cpuset" ] || return 1
+  _it_cs=""
+  IFS= read -r _it_cs < "/proc/$1/cpuset" 2>/dev/null
+  case "$_it_cs" in /top-app*) return 0;; esac
   return 1
 }
 
@@ -1580,8 +1597,9 @@ update_module_desc() {
   # v1.13.19: KernelSU 的管理器卡片读的是 ksud 覆盖层而非 module.prop，写完文件后再同步一次
   # override.description，卡片才会立刻反映最新统计。失败静默——module.prop 始终是权威来源，
   # ksud 缺失或子命令不支持时行为与旧版一致。
+  # v1.13.20: 手动/WebUI 调用时缺失 KSU_MODULE 环境变量会导致 ksud 失败，显式前置注入。
   if [ -x /data/adb/ksud ]; then
-    /data/adb/ksud module config set --temp override.description "${_nd#description=}" >/dev/null 2>&1
+    KSU_MODULE=rmg_memtonic /data/adb/ksud module config set --temp override.description "${_nd#description=}" >/dev/null 2>&1
   fi
 }
 

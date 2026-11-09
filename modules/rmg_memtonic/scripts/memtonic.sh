@@ -278,7 +278,7 @@ if [ -n "$_existing" ] && [ -d "/proc/$_existing" ] && grep -q memtonic /proc/$_
 fi
 check_root_liveness
 echo "$$:$(pid_starttime $$)" > "$PIDF"
-logx E "event=start ver=1.13.18 pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
+logx E "event=start ver=${MT_VERSION#v} pid=$$ poll=${CHECK_INTERVAL}s storm_win=${STORM_WINDOW}s"
 # v1.13.4: 启动善后横幅（P2）——上次会话异常中断检测 + boot reason + rescue 计数
 boot_postmortem
 

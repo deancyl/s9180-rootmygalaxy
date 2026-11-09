@@ -1,8 +1,8 @@
-# RMG MemTonic v1.13.19 —— KernelSU 安装脚本（由 ksud source 执行）
+# RMG MemTonic v1.13.20 —— KernelSU 安装脚本（由 ksud source 执行）
 # 只做两件事：补齐执行权限、声明支持热安装。
 # 纪律：不 exit / 不 return / 不写 SKIPUNZIP —— 避免中断管理器自身的安装流程。
 
-command -v ui_print >/dev/null 2>&1 && ui_print "- RMG MemTonic v1.13.19 (vc59)"
+command -v ui_print >/dev/null 2>&1 && ui_print "- RMG MemTonic v1.13.20 (vc60)"
 
 PM=${MODPATH:-$MODDIR}
 if [ -n "$PM" ] && [ -d "$PM" ]; then

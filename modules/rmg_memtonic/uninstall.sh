@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# uninstall.sh —— RMG MemTonic v1.13.19 卸载清理
+# uninstall.sh —— RMG MemTonic v1.13.20 卸载清理
 # 停止守护与全部子进程，统一还原所有优先级 / 亲和 / 提权改动，删除运行时文件，
 # 并清理早期遗留在 /data/local/tmp 的文件。
 

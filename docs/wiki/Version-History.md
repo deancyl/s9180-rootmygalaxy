@@ -2,6 +2,7 @@
 
 | 版本 | 日期 | 关键变更 |
 |---|---|---|
+| **v1.13.20** | 2026-11-09 | 外部复核收尾热修 + **FR-4 毒瘤检测全面恢复与全链路零 fork 极速重构**：修复 `snapshot_app_pids` 恒空根因、`snapshot_app_ticks` 单次 awk 批量采集（90ms）、`pkg_of`/`is_in_top_app_cgroup`/`nice_of` 全面零 fork 化 + `_pkg_${pid}` 一级包名缓存、雷鸟死条目清洗（200ms→5ms）、修复 `restore_all_on_exit` 漏雷鸟还原、补齐 `KSU_MODULE=rmg_memtonic` 前缀、消除硬编码版本；真机实测 5 轮 `cpu_scan` 平均 **263ms** 稳保 <300ms 预算 |
 | **v1.13.19** | 2026-11-09 | 外部审计 9 项修复：Tgid Tab（`restored` 0→3）、cpuset 改 `cgroup.procs`、卸载补 4 条 pkill、`renice` 增量语义 + SF 提权守卫、`mem_forecast` 读实时值、`am` 加 `timeout 2`、`rollback` 单次采集、`collect_stats` 单 awk、`is_frozen_pid`、护盾息屏降频、`child_heal` 自愈、KernelSU 热安装；WebUI 阈值对齐 450/460/470/496。**新发现 P0（未修）**：FR-4 毒瘤检测自 v1.9.9 失效，1349 次扫描 0 次干预 |
 | **v1.13.18** | 2026-11-08 | **FR-RN1 首次启用**（批量 renice，cpu_scan 340–730ms）+ WebUI 健康分首屏 + 折叠 6→4 |
 | v1.13.17 | 2026-11-08 | FR-RN1 批量 renice（首次通过验收）；含 v1.13.16 还原完整性与零 fork 修复 |

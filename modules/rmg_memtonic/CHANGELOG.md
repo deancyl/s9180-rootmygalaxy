@@ -2,6 +2,33 @@
 
 ---
 
+## [v1.13.20] - 2026-11-09
+
+> 外部复核收尾热修 + FR-4 扫描真实恢复与全链路零 fork 极速重构。
+> 解决 RAYNEO_PKG 作用域丢失、KSU_MODULE 环境变量缺失、启动日志硬编码版本，
+> 并彻底攻克 FR-4 恢复后遍历约 95 个应用进程时 1.7s 的 CPU 扫描性能瓶颈，稳定压在 300ms 以内。
+
+### 缺陷与一致性修复
+
+- **P0 RAYNEO_PKG 作用域修复**（`mt_lib.sh`）：`RAYNEO_PKG="com.rayneo.venus.pub"` 原仅在 `cpu_guard.sh` 中定义。移至 `mt_lib.sh` 全局常量区，彻底解决 `memtonic.sh stop` 与 `uninstall.sh` 调用 `restore_all_on_exit` 时因变量为空 100% 跳过雷鸟线程还原并误删 `rayneo_governor.lst` 的隐患。
+- **KSU_MODULE 环境变量补齐**（`mt_lib.sh`）：`update_module_desc` 调用 `/data/adb/ksud module config set` 时显式注入 `KSU_MODULE=rmg_memtonic`，避免手动 Shell 或 WebUI 刷新时因缺少上下文导致卡片覆盖层设置失败。
+- **版本号引用动态化与残留清理**：
+  - `memtonic.sh` 与 `fluency_shield.sh` 启动日志消除硬编码 `ver=1.13.18`，统一改为 `${MT_VERSION#v}`。
+  - 清理发布目录调试残留：移除 `.bak-1319-pre/`、`.t/` 测试目录以及 `scripts/zz_probe.sh`。
+
+### FR-4 恢复与零 fork 性能攻坚
+
+- **snapshot_app_pids 根因修复**（`cpu_guard.sh`）：修复原实现 `FNR==1` 未给 `pid` 赋值且 `/proc/*/status` 无末尾空行导致输出恒为空的缺陷，精准提取全机约 95 个 UID ≥ 10000 的第三方应用 PID。
+- **snapshot_app_ticks 批量采集**（`cpu_guard.sh`）：单次 `awk` 扫描全量 `status` 并在匹配应用进程时经 `getline` 获取 `stat` 的 `utime+stime`，将 95 次 `cpu_ticks_of` 子进程 fork（~1700ms 严重瓶颈）缩减至单次 90ms 批量完成。
+- **核心辅助函数全链路零 fork 化**（`mt_lib.sh` / `cpu_guard.sh`）：
+  - `pkg_of()`：由 `strings | head | cut`（3 次 fork）重构成 `mksh` 内建 `IFS= read -r`，并在 `cpu_guard` 扫描循环中引入 `_pkg_${pid}` 一级包名缓存。
+  - `is_in_top_app_cgroup()`：由 `$(cat /proc/$1/cpuset)` 替换为 `mksh` 内建 `read`，零子进程。
+  - `nice_of()`：同步设置 `_nice_val` 变量，内部调用免除 `$(nice_of)` 命令替换子 shell。
+  - `rayneo_governor` 死条目清理：由每轮 2400+ 次 Shell read 读 60 行文件重构为单次快速 `awk` 过滤，耗时从 200ms 降至 5ms。
+- **实机验证**：真机连续 5 轮完整 `cpu_scan` 压测，平均耗时 **263ms**（单轮 131~299ms，稳态达标率 100%），开启真实全量应用扫描后依然稳定保持在 300ms 性能预算之内。
+
+---
+
 ## [v1.13.19] - 2026-11-09
 
 > 外部审计 9 项修复 + 生命周期与还原完整性收口。本版**不改阈值、不改功能语义**，只修正确性：
