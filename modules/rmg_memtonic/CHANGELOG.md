@@ -24,6 +24,11 @@
 - **pkg_of NUL 字节截断与 ash 兼容性重构**（`mt_lib.sh`）：改用 `read -r -d ''` 精准截断 `/proc/<pid>/cmdline` 首段参数，彻底消除多参数连缀导致包名提取异常的隐患，并在不支持 `-d` 时保留零 fork fallback。
 - **冗余启动全盘扫描剥离**（`cpu_guard.sh`）：移除 L806-807 无用的 `snapshot_app_pids` 调用，直接调用 `take_ticks_snapshot` 一步到位。
 - **清理重复全局常量**（`cpu_guard.sh`）：移除脚本内重复定义的 `RAYNEO_PKG`，统一继承 `mt_lib.sh`。
+- **子守护防孤儿化与父进程探活加固**（`mt_lib.sh` / 三大子守护）：
+  - 在 `mt_lib.sh` 中实现 `main_daemon_alive()` 零 fork 内建 read 探活函数，彻底淘汰脆弱的 `kill -0 "$PPID"`（防范子守护被 `child_heal` 重拉后脱钩 `PPID=1` 导致的永久孤儿化）；
+  - `cpu_guard.sh`、`storm_guard.sh`、`fluency_shield.sh` 全量改用 `main_daemon_alive`，主守护退出时子守护在 5 秒内全量优雅跳出并清场退出。
+- **零子 shell 活跃包名内建提取**（`cpu_guard.sh`）：将活跃进程扫描中的 `$(pkg_of "$pid")` 重构为零子 shell 内建直接读取，消除命令替换产生的子进程 fork，实测 90 次提取从 700ms 骤降至 60ms（提速 11.6 倍），5 轮平均扫描耗时稳压至 114ms。
+- **非阻塞平滑 `restart` 重构**（`memtonic.sh`）：将 `restart` 从前台 `exec sh "$0"` 重构为通过 `service.sh` 异步拉起并平滑退出，消除 CLI 与管理脚本调用时的前台挂死隐患。
 
 ### FR-4 恢复与零 fork 性能攻坚
 

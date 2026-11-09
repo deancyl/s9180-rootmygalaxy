@@ -849,7 +849,8 @@ rayneo_restore_all   # v1.13.11: 启动自愈——清理上一轮（崩溃/stop
 _mem_hi=0            # v1.10: 连续超阈轮数
 _fg_mflt_prev=       # v1.10: 前台 majflt 上轮基线
 _fg_mflt_warn_ts=0   # v1.10: majflt 预警限频时间戳
-while kill -0 "$PPID" 2>/dev/null; do
+# v1.13.20: 采用零 fork main_daemon_alive 探活，防 PPID=1 时子进程孤儿化永不退出
+while main_daemon_alive; do
   sleep $CPU_SCAN_WIN
   check_root_liveness
   check_dropbox          # FR-5：每 60s 检查崩溃/ANR 事件

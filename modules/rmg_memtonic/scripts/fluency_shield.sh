@@ -103,6 +103,8 @@ shield_fg_restore   # v1.13.19: 启动自愈——还原上一轮护盾遗留的
 
 while true; do
   sleep 5
+  # v1.13.20: 采用零 fork main_daemon_alive 探活，主守护退出立即跳出循环清场
+  main_daemon_alive || break
   _tick_ts=$(date +%s)   # v1.13.2: 每 tick 一次时间获取（原循环内 6 次 date fork）
 
   # v1.13.19: 息屏空闲判定（零 fork）——息屏且蓝牙/相机/截屏均空闲时，跳过 10s 焦点
@@ -613,3 +615,11 @@ while true; do
     shield_cooldown_until=$((_tick_ts + 60))
   fi
 done
+
+# v1.13.20: 主守护已死，退出清场还原全部特权与持久化记录
+shield_fg_restore
+flush_guard_restore 2>/dev/null
+bt_guard_restore 2>/dev/null
+bt2_guard_restore 2>/dev/null
+rm -f "$RUN/fluencyshield.pid" "$RUN/camera_active.flag" "$RUN/camera_vip.bak" "$SCREENSHOT_ACTIVE_FLAG" 2>/dev/null
+exit 0

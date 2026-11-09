@@ -32,7 +32,8 @@ if [ -n "$base" ]; then
   fi
 fi
 
-while kill -0 "$PPID" 2>/dev/null; do
+# v1.13.20: 采用零 fork main_daemon_alive 探活，防 PPID=1 时子进程孤儿化永不退出
+while main_daemon_alive; do
   sleep $STORM_POLL
   check_root_liveness
   cur=$(pidof system_server)

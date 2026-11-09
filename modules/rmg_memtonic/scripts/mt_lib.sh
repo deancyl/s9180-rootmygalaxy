@@ -306,6 +306,19 @@ is_in_top_app_cgroup() {
   return 1
 }
 
+# v1.13.20: main_daemon_alive——零 fork 内建 read 判断主守护 memtonic.sh 是否存活
+# 彻底替代脆弱的 kill -0 "$PPID"（子守护被 child_heal 重拉或独立拉起时脱钩导致 PPID=1，
+# 会使 kill -0 1 永远为真致使子守护成为失控孤儿无法清场）。
+main_daemon_alive() {
+  [ -r "$PIDF" ] || return 1
+  _mda_entry=""
+  IFS= read -r _mda_entry < "$PIDF" 2>/dev/null
+  _mda_pid=${_mda_entry%%:*}
+  case "$_mda_pid" in ''|*[!0-9]*) return 1;; esac
+  [ -d "/proc/$_mda_pid" ] || return 1
+  return 0
+}
+
 # v1.13.19: dumpsys rollback 单次采集 + 60s 复用。
 # 背景：check_staged_rollback（1 次）与 check_rollback_disarm（3-4 次）各自 dump，
 # 每次 ~180ms binder，同一轮巡检重复采集同一份数据。落文件同时规避旧实现记录的
