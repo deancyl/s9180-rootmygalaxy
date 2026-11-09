@@ -183,10 +183,15 @@ optimize)
   exit 0
   ;;
 restart)
-  # Fix-A: restart = 全量清场后重启（解决重复实例问题）
+  # Fix-A: restart = 全量清场后异步重启（防前台阻塞调用方）
   sh "$0" stop
   sleep 2
-  exec sh "$0"
+  if [ -f "$MODDIR/service.sh" ]; then
+    sh "$MODDIR/service.sh"
+  else
+    nohup sh "$0" >/dev/null 2>&1 &
+  fi
+  exit 0
   ;;
 stop)
   p=$(cat "$PIDF" 2>/dev/null)

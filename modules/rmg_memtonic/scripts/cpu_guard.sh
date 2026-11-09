@@ -374,8 +374,13 @@ scan_cpu_rogue() {
     fi
 
     # 活动进程：完整判定（pkg 解析 + 豁免 + 阈值）
-    # v1.13.20 修复：对活跃进程直接校验最新包名，防范 PID 复用后 new_ticks > prev 导致的旧包名缓存污染
-    pkg=$(pkg_of "$pid"); [ -n "$pkg" ] || continue
+    # v1.13.20 修复：对活跃进程直接校验最新包名（零子 shell 内建读取，消除 $(pkg_of) 的子进程 fork 延迟）
+    _po_raw=""
+    if IFS= read -r -d '' _po_raw < "/proc/$pid/cmdline" 2>/dev/null; then :;
+    else IFS= read -r _po_raw < "/proc/$pid/cmdline" 2>/dev/null; fi
+    [ -n "$_po_raw" ] || continue
+    _po_raw=${_po_raw%%:*}
+    pkg="${_po_raw%% *}"
     eval "old_pkg=\${_pkg_${pid}:-}"
     if [ -n "$old_pkg" ] && [ "$old_pkg" != "$pkg" ]; then
       # 检出 PID 复用换皮（包名发生变更）：清理旧包名的所有累加与状态
