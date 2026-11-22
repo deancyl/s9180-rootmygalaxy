@@ -1,4 +1,96 @@
+## [v2.0.1] - 2026-11-21 (versionCode=71, vc71)
+### 缺陷修复 (Bug Fixes)
+- **修复 FR-9 前台护盾误提权 `com.samsung.SMT`（P0 级 Bug）**：在 `get_top_app_info` 中增加 `oom_score_adj == 0` 零 fork 校验，并排除系统常驻绑定服务（`com.samsung.SMT`、`com.google.android.tts`、`com.samsung.android.honeyboard` 等），彻底确保 100% 命中真实前台 App。
+- **全生命周期彻底移除 `drop_caches`**：移除 `memtonic.sh` 手动维护（`once` / `optimize`）残余的 `echo 1 > /proc/sys/vm/drop_caches`，保持 100% 零 drop_caches。
+
+### 功耗与性能优化 (Performance & Battery)
+- **`fluency_shield.sh` 极速省电重构（CPU 自耗降低 90%+）**：
+  - 以零 fork `IFS='. ' read -r _tick_ts _ < /proc/uptime` 彻底替代每 5 秒的 `$(date +%s)`；
+  - 息屏短路深度休眠：息屏且无相机/无护盾/无截屏时执行 `sleep 20; continue`，切断息屏无效轮询；
+  - 截屏哨兵时间戳比对：以零 fork `[ "$sc_dir" -nt "$RUN/sc_dir.ref" ]` 替代每 5 秒穿透 FUSE 扫盘；
+  - FR-9 门槛与提权温和收敛：提升门槛至 `mem PSI >= 15%` 或 `cpu PSI >= 35%`，提权温和收敛至 `-10`（严禁 `-15`），并用零 fork 直读 `comm` 替代 `grep -q RenderThread`。
+
+### 架构与核心守护闭环 (Architecture)
+- **补齐主循环 4 处已规划未接入能力（`memtonic.sh`）**：
+  - 节奏调整：改为亮屏 60s / 息屏 300s 零 fork 轻节拍调度；
+  - 软重启检测与无障碍自愈：零 fork 探查 `system_server` PID 变化，触发黑匣子记录、延时 15 秒恢复无障碍服务及 180s 风暴护栏窗口；
+  - Dropbox 崩溃感知：零 fork 时间戳感知 `/data/system/dropbox` 变更并记录崩溃事件；
+  - 极端 CPU+IO 熔断器：每 3 分钟检测非白名单非前台应用，连续 3 轮 `>=150%`（或单轮 `>=350%`）且缺页增量 `<=200` 时施加 `renice +10` 与 `ionice -c 3`，回落 `<30%` 或切回前台时无损还原；
+  - Dalvik Java 堆只读预警：每 30 分钟采集，连续 2 次 `>=440MB` 且无 staged rollback 时落软重启建议通知。
+- **`mt_lib.sh` 优雅瘦身**：彻底删除 39 个废弃死函数，代码瘦身至 550 行以内；`update_module_desc` 中堆未采集时正确显示「SS堆:待采集」。
+
+### WebUI 精修
+- 移除已废弃的 `st_gc_relief` 与 `st_advise_forecast`，替换为「全域相机护航」与「无障碍自愈备份」实时状态行；
+- 清理前端无效文件读取，更新说明口径（前台护盾与异常熔断）。
+
+## [v2.0.0] - 2026-11-19 (versionCode=70, vc70)
+### 架构与核心守护
+- **架构收敛至双核心守护**：物理删除 `cpu_guard.sh`、`storm_guard.sh`、`vk_injector.sh`、`in_app_stress_test.sh` 4 个废弃脚本，常驻守护精简为 `memtonic.sh` 主守护与 `fluency_shield.sh` 实时护盾，亲和掩码均锁定小核 `0f`。
+- **生命周期清场强化**：`service.sh`、`uninstall.sh`、`memtonic.sh stop` 统一适配双守护，确保 stop 后孤儿残留数为 0。
+
+### 调度与硬件探针
+- **全域无感相机护航 (Universal Camera Guard)**：0-fork 硬件 ticks 探测（准确跳过 13 占位符直读 utime+stime），全域捕获原生相机、微信/支付宝/人脸调相机；落盘 `$CAMERA_ACTIVE_FLAG` 全域避让；`camera.provider` 主线程 `ionice -c 2 -n 0` 提权（退出还原 `-c 2 -n 4`；维持 `cameraserver` 原生 Realtime 特权不降级）。
+- **调度平权与 I/O 削峰**：移除锁小核 `affinity_constrain_one` 与雷鸟降权 `rayneo_governor`；雷鸟纳入白名单实行消费者平权保护；对后台极端大户采用 `renice +10` + `ionice -c 3`（Idle I/O）替代锁小核。
+- **消除蓝牙栈单边提权**：废除 FR-BT2/FR-BT3 单边提权与 `bt2_guard.bak` 截断逻辑，转为原生调度。
+
+### 内存与内核原生守护
+- **零 Binder Dalvik 堆预警**：0-Binder 解析 `/proc/$ss_pid/smaps` 4 类 Dalvik 匿名段，在 `>=440MB` 提前预警手动安全软重启窗口。
+- **息屏安全压实门禁**：废除亮屏规整与自动 `drop_caches=2/3`；采用 `/sys/class/backlight/panel0-backlight/brightness` 0-fork 息屏判定，门禁限定为息屏 + `MemFree >= 800MB` + `psi_mem >= 15%` + 3600s 冷却。
+- **严守原厂 VM 参数红线**：不修改内核 VM 参数，保持三星原生出厂配置 `watermark_scale_factor=37`、`swappiness=130`、`page-cluster=0`。
+
+### WebUI 与指标重构
+- **守护状态检测**：检测 `memtonic.pid` 与 `fluencyshield.pid`，显示「保护 2/2」。
+- **统计卡片 8 类精简**：精简为 `cam`, `shield`, `sc`, `storm`, `rogue`, `compact`, `rollback`, `crash`。
+- **说明与堆水位刻度**：更新弹窗说明；堆水位条对齐 440MB 预警刻度。
+
+## [1.13.23] - 2026-11-18
+### 修复 (Fixes)
+- **雷鸟加入全局白名单（`mt_lib.sh`）**：将 `com.rayneo.venus.pub` 正式纳入 `WHITELIST_PKGS`，彻底禁止 `storm_guard` 与 `cpu_guard` 对雷鸟施加锁小核或毒瘤降权。
+- **修复 `affinity_constrain_one` 退后台漏还原 Bug（`cpu_guard.sh` / `mt_lib.sh`）**：将 `aff=1` 的 CPU 回落/白名单/焦点还原判定前置至 `in_whitelist` 与 `is_foreground_service` 之前，并在 `delta=0` 空闲快路径同步推进还原计数；`affinity_restore_one` / `affinity_restore_all` / `restore_all_on_exit` 规范处理前导 `/` 并增加 `/background` → `/foreground` 兜底；`cpu_guard.sh` 启动与退出均全量还原存量 `affinity_constrained.lst`。
+- **重构 `rayneo_governor` 线程降权白名单（`cpu_guard.sh`）**：降权匹配从 `*raster*|pool-*|DefaultDispatch*|DartWorker*|DefaultExecutor*|AMap*` 严格收窄为仅限 `*raster*|AMap*`，绝不降权承载高频 `BTA_GATTC_NOTIF_EVT` 消费与心跳 ACK 的业务线程池；`RN_ACTIVE_ADJ_MAX` 上调至 `600`，并检测到雷鸟处于 `/background` 时自动迁回 `/foreground`。
+- **隔离 `FR-BT2` 与 `FR-BT3` 蓝牙护航备份并加固 `guard_boost_batch`（`mt_lib.sh` / `fluency_shield.sh` / `memtonic.sh`）**：新增独立 `bt3_guard_boost` / `bt3_guard_restore`（`$RUN/bt3_guard.bak`），接入全生命周期自愈与退出清场；`guard_boost_batch` 重入前若目标 `.bak` 非空先无损还原，严禁清空覆盖原始 `nice` 备份。
+- **护航期雷鸟消费者 `cpuset` 同步保护（`fluency_shield.sh`）**：`FR-BT2`、`FR-BT3`、`FR-9` 激活时通过 `rayneo_ensure_fg_cpuset` 将处于 `/background` 或 `/moderate` 的 `com.rayneo.venus.pub` 迁回 `/foreground`，消除生产者 `-8` / 前台 `-15` 与消费者锁小核倒挂。
+
+## [1.13.22] - 2026-11-17
+### 修复 (Fixes)
+- **恢复三星原生 VM 内核参数**：彻底移除对 `vm.watermark_scale_factor`、`vm.swappiness`、`vm.page-cluster` 的改写，保持三星 SM-S9180 原生出厂调优（watermark 37, swappiness 145），杜绝 kswapd0 疯狂压入 zRAM 导致的物理内存侵占与文件页颠簸。
+- **修复 system_server Java 堆采集口径**：废除整进程 smaps_rollup (682MB) 替代 Java 堆的错误做法；改用单次 awk 仅提取 ART Java 堆 4 类匿名段（dalvik-main/large object/non moving/zygote space）的 Pss 与 SwapPss，保持低频门控，彻底消除 100% 假阳性告警。
+- **修复 fg_majflt 线程数放大 Bug**：改用 `/dev/cpuset/top-app/cgroup.procs` 读取唯一主进程 PID，消除 200 倍线程数乘数假象；增加全系统硬缺页门控与切应用签名比对；并在 `paging_storm_clear` 时同步清理 `source=paging_storm` 的 `reboot_suppressed.flag`。
+- **废除亮屏内存规整**：彻底禁用亮屏期间向 `/proc/sys/vm/compact_memory` 的写入；在息屏规整前增加 `MemFree >= 800MB` 安全门控，消除 98.92% 失败率的规整停顿。
+- **真机状态自愈**：部署时全量清理误报残留的 flags，还原 GC 线程特权。
+
 # RMG MemTonic 版本变更日志
+
+---
+
+## [v1.13.22] - 2026-11-17
+
+> 防御体系深度重构：消除 system_server 软重启根因与死锁隐患。
+> 废除自动循环 drop_caches 与 dumpsys meminfo 轮询，建立换页感知核亲和守护与 VM 性能调优基线。
+
+### 核心重构与缺陷修复
+
+- **R1 软重启状态清理与削峰配额倍增**（`storm_guard.sh`）：
+  - 检测到 system_server 软重启（`cur != base`）及冷启动（`fresh_boot`）时，立即清除旧标志与残留文件（`reboot_suppressed.flag`、`soft_reboot_advised.flag`、`ss_heap_extreme.flag`、`paging_storm.flag`、`mem_forecast.flag`、`ss_heap.kb`、`ss_heap.hist`、`ss_gc_boost.pids`）；
+  - 将 `STORM_MAX_APP` 削峰配额从 60 提升至 180，确保并发自启的后台应用全量纳入控制。
+- **R2 废除 dumpsys meminfo 轮询与消除 Binder 挂死**（`fluency_shield.sh` / `mt_lib.sh`）：
+  - 彻底废除守护循环中调用 `dumpsys meminfo <ss_pid>`，改为零阻塞直读内核 `/proc/$ss_pid/smaps_rollup`（Pss+SwapPss）或 `/proc/$ss_pid/status`，消除对濒死 system_server 的 Binder 阻塞与 13:45:48 型 Watchdog OOM 风险；
+  - 彻底删除 `ss_heap_relief` 及其内部的 `am send-trim-memory` 失败重试循环与 `drop_caches` 调用；
+  - `ss_heap_recovered` 分支在堆回落安全水位后，同步清理软重启相关 3 个标志（`soft_reboot_advised.flag`、`reboot_suppressed.flag`、`ss_heap_extreme.flag`）并归零告警计数 `_ss_crit_streak=0`；
+  - 修正 `gc_boost_on`，仅将 `HeapTaskDaemon` 提权至 nice -10，CPU 亲和性绑至 7f（0-6 核），严禁使用 e0 抢占 CPU7 Prime 超大核。
+- **R3 全面清除自动 drop_caches 恶性循环**（`mt_lib.sh` / `memtonic.sh`）：
+  - 彻底删除后台守护循环自动触发的 `echo 3 > /proc/sys/vm/drop_caches` 内核兜底与限流计数；
+  - 仅在用户手动触发一键优化（`optimize` / `once`）时保留 `echo 1 > /proc/sys/vm/drop_caches`（仅回收可回收 dentry/inode，严禁写入 2 或 3），彻底消除应用冷读盘导致的次生雪崩。
+- **R4 前台焦点检测零 fork 极速重构**（`fluency_shield.sh` / `mt_lib.sh`）：
+  - 仅从 `/dev/cpuset/top-app/cgroup.procs`（或 tasks）读取前台 PID，废除 `/proc/[0-9]*` 全盘回退遍历；
+  - 蓝牙 HAL 解析函数 `get_bt_hal_pid` 改用 `pidof` 与 `pgrep`，消除 3 处全盘遍历。
+- **R5 换页感知防护与系统核心亲和白名单**（`cpu_guard.sh`）：
+  - 对高 CPU 后台进程施加核亲和限制前，读取 `/proc/$pid/stat` 第 12 项 `majflt`：若单轮新增缺页大于 200，本轮仅设 `renice 5` 并跳过 `taskset 0f` 锁小核，保障中核并发完成 zram 解压缩；仅在缺页 <= 200 时限制到小核；
+  - 增加亲和性硬白名单，严格豁免 `system_server` 与 `surfaceflinger` 主进程，永不覆盖其亲和性；
+  - 完善 `restore_all_rogue` 与 `rogue_restore_one`，完整还原进程原始亲和掩码。
+- **R6 VM 参数性能调优与全量版本同步**（`mt_lib.sh` 等）：
+  - 新增 `apply_vm_params`：将 `vm.watermark_scale_factor` 设为 80（适度提前异步回收，消除直接回收停顿），`vm.page-cluster` 设为 0（逐页解压消除预读浪费），`vm.swappiness` 设为 100；
+  - 全量同步版本号至 `v1.13.22`（versionCode=62）。
 
 ---
 

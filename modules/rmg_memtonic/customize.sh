@@ -1,8 +1,8 @@
-# RMG MemTonic v1.13.20 —— KernelSU 安装脚本（由 ksud source 执行）
+# RMG MemTonic v2.0.1 —— KernelSU 安装脚本（由 ksud source 执行）
 # 只做两件事：补齐执行权限、声明支持热安装。
 # 纪律：不 exit / 不 return / 不写 SKIPUNZIP —— 避免中断管理器自身的安装流程。
 
-command -v ui_print >/dev/null 2>&1 && ui_print "- RMG MemTonic v1.13.20 (vc60)"
+command -v ui_print >/dev/null 2>&1 && ui_print "- RMG MemTonic v2.0.1 (vc71)"
 
 PM=${MODPATH:-$MODDIR}
 if [ -n "$PM" ] && [ -d "$PM" ]; then
@@ -13,12 +13,13 @@ if [ -n "$PM" ] && [ -d "$PM" ]; then
     set_perm "$PM/uninstall.sh" 0 0 0755
     set_perm "$PM/customize.sh" 0 0 0755
     set_perm "$PM/hotinstall.sh" 0 0 0755
+    [ -f "$PM/action.sh" ] && set_perm "$PM/action.sh" 0 0 0755
     set_perm "$PM/module.prop" 0 0 0644
     set_perm "$PM/README.md" 0 0 0644
     set_perm "$PM/CHANGELOG.md" 0 0 0644
   else
     chmod 0755 "$PM" "$PM/scripts" 2>/dev/null
-    chmod 0755 "$PM/service.sh" "$PM/uninstall.sh" "$PM/customize.sh" "$PM/hotinstall.sh" "$PM/scripts"/*.sh 2>/dev/null
+    chmod 0755 "$PM/service.sh" "$PM/uninstall.sh" "$PM/customize.sh" "$PM/hotinstall.sh" "$PM/action.sh" "$PM/scripts"/*.sh 2>/dev/null
     chmod 0644 "$PM/module.prop" "$PM/README.md" "$PM/CHANGELOG.md" 2>/dev/null
   fi
 fi

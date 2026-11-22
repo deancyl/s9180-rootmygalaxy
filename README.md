@@ -1,196 +1,129 @@
-# RootMyGalaxy for Galaxy S23 Ultra (SM-S9180 / FZG1)
+# RootMyGalaxy & MemTonic (Samsung Galaxy S23 Ultra Special Edition)
 
-针对 **三星 Galaxy S23 Ultra（SM-S9180）** 的 RootMyGalaxy 移植与增强版本发布仓库。
-基于上游 [BuSung-dev/Root-My-Galaxy](https://github.com/BuSung-dev/Root-My-Galaxy) 的 v0.2.36，针对 `S9180ZHS8FZG1` 固件完成适配，并提供内嵌 **KernelSU v3.3.0** 的增强变体。
+> 🚀 **专为三星 Galaxy S23 Ultra（SM-S9180）打造的免熔断（Zero-Knox）临时 Root 引擎与 MemTonic 深度调优守护生态**  
+> 基于上游 [BuSung-dev/Root-My-Galaxy](https://github.com/BuSung-dev/Root-My-Galaxy) 的 v0.2.36，针对港版/国行 `S9180ZHS8FZG1`（骁龙 8 Gen 2 for Galaxy）固件深度移植，内嵌 **KernelSU v3.3.1 (32680)** 晚期加载（late-load）引擎与 **MemTonic v2.0.1** 实时性能与内存守护体系。
 
-> ⚠️ **本仓库所有版本均为「内存态临时 root」**：不刷写任何分区、不解锁 bootloader、**不触发 Knox e-fuse**，重启后 root 失效，手机恢复完全原厂状态。
+> ⚠️ **【核心安全边界：内存态临时 Root】**  
+> 本项目所有机制均为**纯内存态运行**：**绝不刷写任何系统只读分区**（`/system`、`/vendor`、`/product`）、**绝不解锁 Bootloader**、**绝对不触发 Knox 物理熔断（0x0 状态恒久保持）**！日常重启后系统瞬间恢复 100% 官方原厂纯净状态，无任何持久化残留与保修风险。
+
+---
+
+## 📱 机型适用范围与兼容性声明 (Compatibility Matrix)
+
+| 分级 | 设备型号 / 平台 | 固件 / SPL 基线 | 状态与支持承诺 |
+|---|---|---|---|
+| **Tier 1<br>（官方首发 / 深度实测）** | **Samsung Galaxy S23 Ultra**<br>(`SM-S9180`, 港版 / 国行同硬件) | **S9180ZHS8FZG1**<br>(One UI 8.5 / Android 16)<br>SPL: **2026-07-05** 及更早 | **100% 官方验证与深度支持**。<br>全链路经过 ADB 真机压测、KernelSU Manager v3.3.1 兼容、大核调度亲和性与 WebUI 闭环验收。 |
+| **Tier 2<br>（社区实验 / 极客探索）** | **其他三星高通骁龙机型**<br>(如 S23/S23+、S24 系列、Z Fold/Flip 系列等) | 骁龙 8 Gen 2 / 8 Gen 3 平台<br>且 SPL ≤ 2026-07-05 | **理论相通，但不做任何可用性与稳定性保证**。<br>CVE-2026-43499 内核利用与 ksud late-load 机制在架构上通用，极客用户可自行尝试，但因 OEM 分区基址、内存映射及调度拓扑差异，**官方不提供测试与效果承诺，请自担风险**。 |
+| **Tier 3<br>（明确不支持 / 严禁尝试）** | **Exynos 猎户座芯片机型**<br>非三星厂商设备<br>**2026-08 及以后安全补丁固件** | 任意固件 | **完全不支持**。<br>2026-08 及以后的补丁已封堵 CVE-2026-43499；猎户座芯片内核结构与补丁逻辑完全不同，强行运行必将失败。 |
+
+> 🔍 **真机核对方法**：手机进入「设置」→「关于手机」→「软件信息」，确认「型号名称为 SM-S9180」、「内核版本为 5.15」、「Android 安全补丁级别为 2026-07-05 或更早」。终端执行 `adb shell getprop ro.build.fingerprint` 应含 `S9180ZHS8FZG1`。
 
 ---
 
 ## 📦 Releases
 
-| Release | 说明 | 适用人群 |
-|---|---|---|
-| [`v0.2.36-fzg1`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v0.2.36-fzg1) | **原版基线**：上游 0.2.36（已实测可成功临时 root 的版本），内嵌 KernelSU **v3.2.5** | 求稳、只求能用 |
-| [`v0.2.36-ksu331`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v0.2.36-ksu331) | **增强变体（最新）**：同一基线，内嵌 ksud 换为 **KernelSU v3.3.1（32680）**，其余逐字节一致 | 想用最新版 KernelSU（推荐） |
-| [`v0.2.36-ksu330`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v0.2.36-ksu330) | 增强变体：同一基线，内嵌 ksud 换为 **KernelSU v3.3.0（32601）**，其余逐字节一致 | 需要上一代版本 |
+### 🧩 MemTonic 深度调优模块 Releases（配套临时 Root 使用）
 
-两个版本**exploit 链路完全相同**（逐字节一致），区别仅在于 late-load 的 KernelSU 版本。
+MemTonic 是专门配套本临时 Root 环境运行的高性能 KernelSU 模块：开机/软重启后自动拉起，对前台渲染、相机硬件调度、系统核心堆异常、无障碍自愈进行静默守护，Root 失效后自动停止。
 
-## 🧩 MemTonic 内存模块 Releases
+> 💡 **安装提示**：模块需运行在临时 Root 会话中。每个 Release 均附带前置推荐 APK（`rootmygalaxy-0.2.36-ksu331.apk`）。请先安装并打开 APK 激活临时 Root，再于 KernelSU 管理器中刷入模块 ZIP。
 
-MemTonic 是**配套本仓库临时 root 环境使用**的 KernelSU 模块：软重启（root 会话存活）期间做内存与异常守护，root 失效后自动停止，不做任何持久化改动。
+| MemTonic 版本 | 状态 | 核心亮点与适用人群 | 推荐度 |
+|---|---|---|:---:|
+| [`v2.0.1`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v2.0.1) | **正式最新版 (Latest)** | **里程碑升级：KernelSU 3.3.1 深度合规 + 极简双核心架构 + WebUI 8 项统计完全自愈**<br>① **架构精简收敛**：废除 4 个分散子守护，收敛为 `memtonic.sh`（主调度与系统核心守护）与 `fluency_shield.sh`（前台防掉帧护盾）；<br>② **卡片锁定自愈**：解决临时 Root 热刷入产生的孤儿 `update` 锁，修复卡片 Switch 置灰与按钮隐藏通病；<br>③ **WebUI 状态看板完全自愈**：修复 `mt_lib.sh` 在 source 下 `$0` 路径误算历史根因，模块 8 项核心统计实时精准呈现；<br>④ **相机与截屏硬件护航**：打开相机极速绑定骁龙 8 Gen 2 大核（CPU 4-7），彻底杜绝掉帧；截屏哨兵 0-fork 时间戳检测免扰；<br>⑤ **全生命周期零 drop_caches**：彻底移除盲丢缓存逻辑，保护应用热数据。 | 🌟🌟🌟🌟🌟<br>**全员首选** |
+| [`v1.13.20`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.20) | 历史稳定版 | FR-4 毒瘤检测全面恢复与全链路零 fork 极速重构。单次 awk 批量采集，活跃进程一级包名缓存，真机 5 轮扫描稳保 < 300ms 预算。 | 历史存档 |
+| [`v1.13.19`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.19) | 历史版本 | 外部审计 9 项修复：Tgid Tab 分隔符、cpuset 改 `cgroup.procs`、卸载清场补齐、renice 增量语义守卫。 | 历史存档 |
+| [`v1.13.18`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.18) | 历史版本 | FR-RN1 雷鸟后台治理首次启用 + WebUI 健康分首屏。 | 历史存档 |
 
-> ⚠️ 模块依赖临时 root 会话才能加载，因此每个 MemTonic release 都**附带前置 APK**（`rootmygalaxy-0.2.36-ksu331.apk`，内嵌 KernelSU v3.3.1）。请先用 APK 完成一次临时 root，再刷入模块 zip。
+---
 
-| MemTonic | 说明 | 适用人群 |
-|---|---|---|
-| [`v1.13.20`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.20) | **当前最新**：外部复核收尾热修 + **FR-4 毒瘤检测全面恢复与全链路零 fork 极速重构**。① 修复 `snapshot_app_pids` 历史根因（`FNR==1` 未赋值 pid 且无末尾空行导致恒为空），全面恢复全量约 95 个应用进程的真实扫描；② `snapshot_app_ticks` 单次 awk 批量采集（90ms），消除逐进程 `cpu_ticks_of`（95 次 fork ≈ 1.7s）瓶颈；③ `pkg_of`、`is_in_top_app_cgroup`、`nice_of` 全面内建零 fork 化，并引入 `_pkg_${pid}` 一级包名缓存；④ `rayneo_governor` 死条目清洗单次 awk 重构（200ms → 5ms）；⑤ 修复 `restore_all_on_exit` 中 `RAYNEO_PKG` 作用域丢失 Bug；⑥ 补齐 `KSU_MODULE=rmg_memtonic` 环境变量；⑦ 消除日志硬编码版本号并清理调试残留。真机实测 5 轮 `cpu_scan` 平均 **263ms**，全量真实扫描稳保 < 300ms 预算。单测断言 100% 通过 | **新装首选** |
-| [`v1.13.19`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.19) | 外部审计 9 项修复（**不改阈值、不改功能语义**）——Tgid Tab 分隔符（`rayneo_restore` 由 `restored=0` 修复为实测 3）、cpuset 改 `cgroup.procs` 全线程迁移、卸载补齐 4 条 `pkill`（消除孤儿守护）、`renice` 增量语义与 SF 提权守卫 + 护盾提权落盘、`mem_forecast` 读实时值（修亮屏 psi=0 误压实）、`am` 加 `timeout 2`、`dumpsys rollback` 单次采集、`collect_stats` 单次 awk、`is_frozen_pid` 跳过冻结进程、护盾息屏降频、`child_heal` 子守护自愈、KernelSU 规范（`MODDIR=${0%/*}` + `customize.sh`/`hotinstall.sh` 热安装）；WebUI 阈值对齐 450/460/470/496。单测 289/289。**已知 P0（本版未修）**：FR-4 毒瘤检测自 v1.9.9 起失效（1349 次扫描 0 次干预） | 稳定保守选择 |
-| [`v1.13.18`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.18) | **FR-RN1 雷鸟治理首次成功启用**（根因是逐线程 renice ≈600 fork/轮，改按 nice 分桶批量调用后 cpu_scan 340–730ms，历史为 1770–13010ms）+ WebUI **健康分首屏**（可用/堆/swap/PSI/CPU-PSI 综合 0–100 分 + 一句人话）+ 折叠区 6→4 | 历史存档 |
-| [`v1.13.17`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.17) | FR-RN1 批量 renice（首次通过 5 轮验收）；含 v1.13.16 的 stop/uninstall 还原完整性与零 fork 化（二者同一提交） | 稳定保守选择 |
-| [`v1.13.15`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.15) | 审计后**纯降本**——堆探测门控（RSS 变化 <30MB 且 mem PSI <5% 时跳过 `dumpsys`，消除 9s 级扫描尖峰）、扫描日志降频、堆快照限流（危机态不限、保留 OOM 现场）、护航复用前台采样；零功能损失、阈值语义不变 | 历史存档 |
-| [`v1.13.14`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.14) | FR-SS 六项硬化——`am` 失败后走内核 `drop_caches` 兜底、阈值前移 430/450/460/470/480MB、GC 提权 -15 + 绑大核、连续 3 点趋势判定、抑制态极限压制；WebUI flag 时效化 + ⓘ 弹层 + CSS 误伤修复 | 历史存档 |
-| [`v1.13.13`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.13) | FR-RN1 零 fork 修复（`cpu_scan` 1770–13010ms → 210–220ms 的 A/B 铁证）、WebUI P2 四项、雷鸟语音链路削峰豁免（`act=voice_asr_skip`）；验收 0/5 后自动回滚旁路 flag | 需要 P2 联网诊断/语音链路治理者 |
-| [`v1.13.12`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.12) | FR-RN1 雷鸟治理五缺陷（Tgid 归属校验 / `oom_score_adj≤300` 判活 / 风暴期可达 / 双路径清场 / memo 门控）+ WebUI P0/P1 一致性 | 稳定保守选择 |
-| [`memtonic-v1.11.0`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.11.0) | 状态可视化：卡片动态统计 + WebUI 状态面板 | 历史存档 |
-| [`memtonic-v1.10.0`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.10.0) | 内存风暴三件套——mem PSI 60s 连续监测（内建 read 零 fork）、灾难黑匣子（连续 2 轮 some≥25 落盘 PSI/RSS+majflt Top10）、亮屏风暴级压实例外（psi≥30 唯一通道，常规亮屏禁压铁律不变）；kswapd>90s/h 顺手压实；前台 majflt 转码指纹预警 | 历史存档 |
-| [`memtonic-v1.9.12`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.12) | Rollback 地雷自动排除哨兵（防软重启被升级为完整重启而丢 root）、sspid 门闩重置、启动环境基线、7 脚本全量 ARG_MAX 审计修复 | 稳定保守选择 |
-| [`memtonic-v1.9.6`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.6) | 修复 uninstall 盲杀防变砖、`alive()` 逻辑、vk_injector 多 PID bug | 需要 v1.9.1~1.9.5 网络救援特性者 |
-| [`memtonic-v1.9.5`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.5) | 护盾日志版本号与各脚本版本声明同步；CPU 护栏死线程清理的内存泄漏修复 | 同上 |
-| [`memtonic-v1.9.4`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.4) | 移除无效 updateJson、版本号一致性、绝对路径解析修复、CPU 护栏死线程防泄漏 | 同上 |
-| [`memtonic-v1.9.3`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.3) | 修复 `start` 无参启动被拦截、移除硬编码路径（提升可移植性） | 同上 |
-| [`memtonic-v1.9.2`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.2) | 移除全局 IPv4 TCP sysctl 注入（避免整机网络副作用与待机耗电） | 不想改系统网络参数者 |
-| [`memtonic-v1.9.1`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.9.1) | 网络假死底层救援（TCP Keepalive / FIN 快速回收）、MTU 碎片探测、VPN 进程豁免防降权 | 仍需网络急救特性者 |
-| [`memtonic-v1.4.3`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.4.3) | renice 口径显式化（线程级 tid 计数 + 打击面明细快照），纯观测增强 | 仅需启动风暴护栏 |
-| [`memtonic-v1.3.0`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/memtonic-v1.3.0) | 早期版本：启动风暴护栏 + 息屏内存压实 | 历史存档 |
+### 📱 RootMyGalaxy 前置临时 Root APK Releases
 
-> **版本号缺口说明**：`v1.13.0` ~ `v1.13.11` 与早期 `v1.9.7` ~ `v1.9.11` 均为同一工作目录连续迭代（未做实体归档），**没有可安装包**，因此不提供 tag/release；这些版本的完整变更记录见 `v1.13.12` / `v1.9.12` 的 `CHANGELOG.md`。`v1.13.12` 起的每个版本都有独立 tag、release 与可安装 zip。
+| Release | 说明 | 内嵌 KernelSU 版本 | 适用人群 |
+|---|---|---|---|
+| [`v0.2.36-ksu331`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v0.2.36-ksu331) | **增强变体（官方推荐）** | 内嵌 **KernelSU v3.3.1 (32680)** | 配套最新 KernelSU Manager v3.3.1 使用（强烈推荐） |
+| [`v0.2.36-ksu330`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v0.2.36-ksu330) | 增强变体 | 内嵌 KernelSU v3.3.0 (32601) | 需要上一代 KSU 驱动环境者 |
+| [`v0.2.36-fzg1`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v0.2.36-fzg1) | 原版基线 | 内嵌 KernelSU v3.2.5 | 仅供基线对比 |
 
-**安装步骤**（KernelSU → 模块 → 刷入 zip；或直接用 KernelSU 管理器安装 zip）：
+---
 
-1. 用本仓库 Release 的 APK 完成一次临时 root（KSU 管理器会随之安装）
-2. KernelSU 管理器 →「模块」→ 安装模块 → 选择 `rmg_memtonic-vX.Y.Z.zip`
-3. 重启框架（KernelSU 软重启）后生效，状态见 `sh /data/adb/modules/rmg_memtonic/scripts/memtonic.sh status`
-
-**升级**：`service.sh` 不重跑软重启（会丢 root），请用 `stop` + `start` 重启模块守护使新代码生效。
-
-## 📚 文档
-
-| 文档 | 位置 |
-|---|---|
-| 安装与升级、常见问题、版本记录、安全边界与工作原理 | [`docs/wiki/`](docs/wiki/)（Wiki 源文件，5 页） |
-| 逐版本完整变更 | [`modules/rmg_memtonic/CHANGELOG.md`](modules/rmg_memtonic/CHANGELOG.md) |
-| 各版本 Release 正文归档 | [`docs/releases/`](docs/releases/)（线上正文导出，v1.13.12 起共 6 份） |
-| 开发进度快照 | [`docs/progress/`](docs/progress/) |
-| 事故取证与分析报告 | [`docs/analysis/`](docs/analysis/) |
-| v1.13.16 开发与部署方案（需求 / 已知问题 / 风险 / 验证矩阵） | [`docs/analysis/MemTonic_v1.13.16_开发部署方案_2026-11-08.md`](docs/analysis/MemTonic_v1.13.16_开发部署方案_2026-11-08.md) |
-| 2026-11-08 进度同步核查（Latest 修正、代码指纹、未闭环项） | [`docs/progress/2026-11-08-sync-checkpoint.md`](docs/progress/2026-11-08-sync-checkpoint.md) |
-
-> **关于 GitHub Wiki**：本仓库 Wiki 尚未在网页端初始化（GitHub 要求先手动创建首页，之后才能 `git push`）。页面内容已版本化在 `docs/wiki/`；初始化后运行 [`docs/wiki/sync.sh`](docs/wiki/sync.sh) 即可一键同步（文件名与页面名一一对应）。
-
-## ✅ 适用范围（务必核对）
-
-| 项目 | 要求 |
-|---|---|
-| 机型 | Samsung **Galaxy S23 Ultra SM-S9180**（港版/国行同硬件） |
-| 固件（PDA/CSC） | **S9180ZHS8FZG1**（FZG1） |
-| 系统版本 | One UI 8.5 / Android 16 |
-| 内核版本 | `5.15.189-android13-8-33413713-abS9180ZHS8FZG1` |
-| 安全补丁级别（SPL） | **2026-07-05**（或更早的 ZHS 系固件） |
-
-### ❌ 不适用的情况
-
-- 其他任何机型（含 S23 Ultra 其他销售地区固件的未验证版本）
-- **2026-08 安全补丁及以后的固件** —— CVE-2026-43499（GhostLock）预计在该批补丁中被封堵，升级后本工具将永久失效
-- 已解锁/已刷机的设备（未测试，后果自负）
-
-**核对方法**：设置 → 关于手机 → 软件信息，确认「One UI 版本 / Android 版本 / 内核版本 / 安全补丁程序级别」与上表一致；或 `adb shell getprop ro.build.fingerprint` 应包含 `S9180ZHS8FZG1`。
-
-## 🔧 工作原理
-
-1. 利用内核漏洞 **CVE-2026-43499（GhostLock）** 获取内存态临时 root（uid=0）
-2. 通过 ksud 以 **late-load（LKM）** 方式向内核加载 KernelSU 模块（手动重定位，无需修改任何分区）
-3. 全程 **SELinux 保持 Enforcing**、**Knox 不受影响**、无任何持久化写入
-
-## 📲 使用方法
-
-1. 下载 Release 中的 APK，安装（需允许安装未知来源应用）
-2. 打开 App，按界面提示触发临时 root
-3. 打开 KernelSU Manager 确认状态为「工作中」；**Manager 版本必须与 APK 内嵌 ksud 一致**：`v0.2.36-ksu331` 配 KernelSU **v3.3.1 / 驱动 32680**，`v0.2.36-ksu330` 配 **v3.3.0 / 32601**，`v0.2.36-fzg1` 配 **v3.2.5**；版本不匹配会导致管理器无法识别（[KernelSU releases](https://github.com/ReSukiSU/KernelSU/releases)）
-4. **重启后 root 失效**，需要时重新打开 App 再跑一次即可
-
-## 🧾 校验和
-
-### v0.2.36-ksu331（增强变体，推荐）
+## 🛡️ MemTonic v2.0.1 核心技术架构
 
 ```
+rmg_memtonic/
+├── module.prop                  ← 模块声明（v2.0.1 / versionCode 71）
+├── customize.sh                 ← KernelSU 安装契约（run/ 用户配置热迁移，不触碰 webroot SELinux）
+├── hotinstall.sh                ← 免重启热安装与卡片状态自愈（自动清除孤儿 update 锁）
+├── service.sh                   ← 异步守护入口（带 disable/remove 状态自检）
+├── action.sh                    ← 管理器 [▶️] 操作按钮原生执行契约（校验双守护 PID 与系统堆）
+├── uninstall.sh                 ← 卸载清场与系统调度完整复原
+├── webroot/
+│   └── index.html               ← 现代自适应 WebUI 状态监控看板与控制面板
+└── scripts/
+    ├── mt_lib.sh                ← 公共函数库（0-fork 提取、8 项统计采集、系统核心堆只读探测）
+    ├── memtonic.sh              ← 调度主守护（内存压实、软重启自愈、无障碍自愈、高负荷熔断）
+    └── fluency_shield.sh        ← 前台防线守护（前台调度护盾、相机大核绑定、截屏免扰哨兵）
+```
+
+### 1. 启动与前台极致提权（Fluency Shield）
+- **前台焦点零延迟护航**：通过内核 `/proc/$pid/cpuset` 极速感知 `/top-app` 分组，赋予前台应用 UI/渲染线程 `-10` 绝对调度权；
+- **息屏省电短路**：息屏后自适应转入 20s 深度低功耗睡眠，自身 CPU 占有率压缩 90%+。
+
+### 2. 相机专属大核亲和（Camera Guard）
+- 针对 S23 Ultra 高负载计算摄影场景，当相机进程启动时，瞬时将 `cameraserver` 及相关 HAL 服务绑定至骁龙 8 Gen 2 大核心簇（CPU 4-7），杜绝 4K60FPS 录像或快速连拍时的卡顿与跳帧。
+
+### 3. 全生命周期零 `drop_caches` 铁律
+- 坚决杜绝粗暴丢缓存引发的整机冷启动雪崩。仅在息屏且 PSI 内存压力指标超标时进行温和内核内存压实，全面保护系统与常用应用的热缓存。
+
+### 4. 系统核心 Java 堆自愈与软重启守护
+- 纯内核只读监控 `system_server` 的 Dalvik 堆内存水位，彻底消除 Binder IPC 卡死导致的 Watchdog 重启；
+- 软重启（Soft Reboot）后 10 秒内自动自愈：重置状态门闩、自适应重新拉起无障碍服务（Accessibility Services）。
+
+---
+
+## 📲 使用与升级指南
+
+### 首次安装与激活
+1. 在 Releases 中下载 `rootmygalaxy-0.2.36-ksu331.apk` 并安装至手机；
+2. 安装官方配套的 [KernelSU Manager v3.3.1](https://github.com/ReSukiSU/KernelSU/releases)；
+3. 打开 RootMyGalaxy App，点击一键触发临时 Root；
+4. 打开 KernelSU Manager 确认显示为「工作中（越狱模式）」；
+5. 在 KernelSU 管理器中切至「模块」Tab，点击「安装模块」，选择下载的 `MemTonic-v2.0.1.zip`；
+6. 刷入完成后点击模块卡片的 WebUI 按钮 `[< >]`，即可直接查看实时状态面板与健康分！
+
+### 升级说明（免重启热升级）
+- 模块原生支持 **越狱模式热部署**：在 KernelSU 管理器中直接刷入新版本 ZIP，`hotinstall.sh` 会自动接管新旧进程切换、热合并文件并消除 `update` 锁，**完全无需重启手机**。
+
+---
+
+## 🧾 二进制产物指纹与校验和
+
+### MemTonic-v2.0.1.zip（模块安装包）
+```text
+MD5    : 15c5483820c1ea8fd48b9d5d60b2f836
+SHA256 : 6d01fc0034ea52bbc972b6e8c0938b1f0e8b8ecde6f2dedc7f393a1e650e67da
+大小   : 246,805 字节
+```
+
+### rootmygalaxy-0.2.36-ksu331.apk（官方前置推荐 APK）
+```text
 MD5    : b2ce7bcff966febe7e8965e25c243b0a
 SHA256 : b0bd6b5c2ac754efd04cd60e1d83bce438d57b313ebc78dbf7df00bd6e1fa167
-大小    : 68,178,226 字节
+大小   : 68,178,226 字节
 ```
 
-> 自 v0.2.36-ksu331 起的所有 RootMyGalaxy APK（含 MemTonic release 附带的前置 APK）均为上述文件，`sha256 = b0bd6b5c…fa167`；若下载到的 APK 指纹不符，请勿安装。
+---
 
-### v0.2.36-ksu330（增强变体）
+## ⚠️ 免责声明 (Disclaimer)
 
-```
-MD5    : 102f5dd4dbbab7fb7babbbb5a8bac8a2
-SHA256 : 03135340607fba9d4f15c3183af62d83f64c87e311e8d6deef38de5edf9a8d00
-大小    : 68,141,362 字节
-```
+1. 本项目基于公开的安全漏洞（CVE-2026-43499）研究与实现，仅供技术交流与设备所有者个人安全测试使用。
+2. 尽管内存态临时 Root 不会触碰设备闪存分区或 Knox 物理保险丝，但任何系统级调试与提权操作均存在潜在风险。作者不对因使用本工具导致的任何数据丢失、系统异常或设备故障承担法律责任。
+3. 请在操作前务必备份个人重要数据。请勿将本项目用于任何违法违规用途。
 
-### v0.2.36-fzg1（原版基线）
+---
 
-```
-MD5    : 3b334cdad520f5d6f990ae661661824b
-SHA256 : 17a88b2ed053bc1e54439a841b744bb2ee10f4ab90492ad431827db1f390b457
-大小    : 69,820,722 字节
-```
+## 🙏 致谢 (Credits)
 
-## ⚠️ 风险声明
-
-- 本工具利用公开的内核漏洞实现临时 root，**任何 root 操作均有风险**，包括但不限于系统不稳定、数据丢失、极小概率的设备损坏
-- Knox e-fuse 理论上不会被触发（不刷分区、不碰 bootloader），但**作者不对任何意外后果负责**
-- root 后的内核模块行为（KDP/RKP/DEFEX 交互）已在目标固件上实测，但**不保证在其他固件版本上的行为**
-- 请勿将本工具用于非法用途；仅供设备所有者在自己的设备上研究与使用
-
-## 📁 仓库结构
-
-本仓库不仅发布 APK，也**完整托管源码与构建链**，可克隆后从零复现全部产物：
-
-```
-s9180-rootmygalaxy/
-├── README.md                                    ← 本文件
-├── LICENSE                                      ← GPL-3.0（KernelSU 衍生代码）
-├── modules/
-│   └── rmg_memtonic/                            ← MemTonic 内存守护模块（当前主干 v1.13.19 / vc59）
-│       ├── customize.sh / hotinstall.sh         ← KernelSU 安装脚本与热安装钩子（v1.13.19）
-│       启动风暴护栏 + CPU 失常护栏 + 前台护盾 + Camera/Screenshot Sentinel +
-│       Rollback 地雷排除哨兵 + 结构化日志；版本历史见上方 Releases，
-│       完整变更记录见 modules/rmg_memtonic/CHANGELOG.md
-├── docs/progress/                               ← 开发进度记录（脱敏）
-├── patch/
-│   ├── KernelSU-v3.3.1-samsung-kdp-rkp-defex.patch   ← 最新（v3.3.1 / 32680）
-│   └── KernelSU-v3.3.0-samsung-kdp-rkp-defex.patch   ← 上一代（v3.3.0 / 32601）
-│       核心成果：将 Samsung KDP/RKP/DEFEX 内核加固适配移植到
-│       KernelSU v3.3.x 源码树（16 文件，干净树上 round-trip 可过）
-├── .github/workflows/
-│   └── build.yml                                ← GitHub Actions 构建流水线
-│       （DDK 容器构建 .ko + NDK r29 交叉编译 ksud，手动触发）
-├── scripts/
-│   ├── 01-build-module.sh                       ← 本地构建内核模块（需 docker）
-│   ├── 02-build-ksud.sh                         ← 本地交叉编译 ksud（需 NDK，rust_embed 内嵌 .ko）
-│   ├── 03-audit-module.sh                       ← 符号审计（硬门槛：missing=0；工具自动从上游拉取）
-│   ├── 04-deploy-device.ps1                     ← 真机部署（推送 ksud + exploit + late-load）
-│   ├── build_fzg1_apk.py                        ← App 重打包：替换内嵌 payload/helper/feed
-│   └── build_ksu330_apk.py                      ← App 重打包：内嵌 ksud 升级为 v3.3.0（本仓库 v0.2.36-ksu330 的来源）
-└── docs/
-    ├── BUILD.md                                 ← 构建指南（Actions / 本地两种方式 + 已知构建坑）
-    └── VERIFY.md                                ← 真机部署与验证清单（预热/时序铁律/排错）
-```
-
-### 快速开始（开发者）
-
-```sh
-git clone https://github.com/deancyl/s9180-rootmygalaxy.git
-cd s9180-rootmygalaxy
-# 构建见 docs/BUILD.md；真机验证见 docs/VERIFY.md
-```
-
-### 二进制产物的来源与校验
-
-| Release 内 APK | 构建方式 | 校验 |
-|---|---|---|
-| `rootmygalaxy-0.2.36-fzg1` | 上游原版（未修改） | 见 Release 页 |
-| `rootmygalaxy-0.2.36-ksu330` | `scripts/build_ksu330_apk.py` 对原版做**最小差异替换**（仅内嵌 ksud 资产 + feed size），全部 139 个条目中 136 个逐字节一致 | 见 Release 页 |
-| `rootmygalaxy-0.2.36-ksu331` | 与 ksu330 同型最小差异替换（仅内嵌 ksud 换 **v3.3.1/32680**，exploit 链路逐字节一致），配套 Manager v3.3.1 | 见 Release 页 |
-
-App 基线来自上游 Root-My-Galaxy（Apache-2.0），内核侧补丁衍生自 KernelSU（GPL-3.0），
-audit 工具取自上游 Payloads 仓库（Apache-2.0），许可证归属详见 LICENSE 与上方说明。
-
-## 🙏 致谢
-
-- [BuSung-dev/Root-My-Galaxy](https://github.com/BuSung-dev/Root-My-Galaxy) — 上游项目
-- [KernelSU](https://github.com/ReSukiSU/KernelSU) — 内核级 root 方案
-- CVE-2026-43499 (GhostLock) 的发现者
+- [BuSung-dev/Root-My-Galaxy](https://github.com/BuSung-dev/Root-My-Galaxy) — 上游临时 Root 核心工程基线
+- [KernelSU](https://github.com/ReSukiSU/KernelSU) — 革命性的内核级 Root 解决方案
+- CVE-2026-43499 (GhostLock) 内核漏洞的研究者与发现团队

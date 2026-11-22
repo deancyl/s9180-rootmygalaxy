@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="icon" href="data:,">
 <title>MemTonic 状态面板</title>
 <style>
   :root{
@@ -200,12 +201,12 @@
 </div>
 
 <details class="fold">
-  <summary>内存与保护 · <span id="card_summary">14 类</span></summary>
+  <summary>内存与保护 · <span id="card_summary">8 类</span></summary>
   <div class="foldbody">
-    <div class="foldhint">内存细节与 14 类保护计数 <button type="button" class="ib" data-info="crisis">i</button></div>
-    <div class="kvrow"><span class="k">回收加速 / 清理失败</span><b id="st_gc_relief" class="mono">--</b></div>
-    <div class="kvrow"><span class="k">重启建议 / 提前预警</span><b id="st_advise_forecast" class="mono">--</b></div>
-    <div class="kvrow"><span class="k">最近检查 / 最近内存吃紧</span><b id="st_probe_paging" class="mono" style="font-size:11px;font-weight:500">--</b></div>
+    <div class="foldhint">保护与状态细节与 8 类保护计数 <button type="button" class="ib" data-info="crisis">i</button></div>
+    <div class="kvrow"><span class="k">全域相机护航</span><b id="st_camera_guard" class="mono">--</b></div>
+    <div class="kvrow"><span class="k">无障碍自愈备份</span><b id="st_a11y_backup" class="mono">--</b></div>
+    <div class="kvrow"><span class="k">系统核心堆最近采样</span><b id="st_probe_paging" class="mono" style="font-size:11px;font-weight:500">--</b></div>
     <div class="grid" id="cards" style="margin-top:10px"></div>
     <details class="more" style="margin-top:8px"><summary>每一类具体管什么</summary><div id="card_explain"></div></details>
     <div class="hint" id="logcycle">数字从本次日志周期开始累计；日志超过 512KB 会清零重算。管理器里的数字可能比这里慢一次刷新，以本页「数据更新时间」为准。</div>
@@ -383,21 +384,21 @@
   // UI-R2: ⓘ 信息弹层。主界面只说人话，专业口径与底层行为说明集中在此。
   // 每条说明均与模块真实实现一一对应，不夸大、不暗示模块会代执行任何动作。
   var INFO_DEFS = {
-    guards: {t:'「保护 4/4」是什么意思', b:'面板靠 4 个小后台进程持续看护手机：\n· 主守护（memtonic）：总调度与自检\n· 风暴（storm_guard）：开机、软重启、相机调用的高峰期\n· CPU（cpu_guard）：按压力调整线程优先级\n· 护盾（fluency_shield）：前台流畅度最后一道防线\n\n4/4 表示 4 个都在正常运行；少于 4 说明有进程没起来。打开本说明会附带当前实时明细（✓ 正常 / ✗ 未运行）。'},
+    guards: {t:'「保护 2/2」是什么意思', b:'面板靠 2 个核心后台进程持续看护手机：\n· 主守护（memtonic）：总调度、系统健康自检与息屏安全压实\n· 实时护盾（fluency_shield）：全域无感相机硬件护航与高压前台渲染护盾\n\n2/2 表示 2 个核心守护都在正常运行；少于 2 说明有守护未拉起。打开本说明会附带当前实时明细（✓ 正常 / ✗ 未运行）。'},
     root: {t:'「权限正常」是什么意思', b:'这里的权限指临时 root（KernelSU 会话）。模块需要它读取系统状态、调整线程优先级。\n临时 root 在完整重启后会失效，需要重新获取；本面板不会自己去申请，也不会改动系统分区。'},
     version: {t:'版本信息', b:'v1.13.13 这类编号是模块版本；vc53 是内部版本号（versionCode），供管理器判断是否需要更新。\n统计口径：本日志周期——日志超过 512KB 会截断并从零重新计数。'},
     refresh: {t:'自动刷新', b:'面板每 30 秒重新读一次状态，只在页面可见时执行，不额外唤醒手机。点「刷新」可立刻重读一次，不改变任何设置。'},
     psi: {t:'内存压力', b:'两个百分比是 PSI（Pressure Stall Information）avg10 读数：前一个表示「有些任务因内存慢下来」的时间占比，后一个表示「全部任务都卡住」的占比。\n数值越高越卡；达到 30% 会标红。数值来自 collect_stats 的 psi_s10 / psi_f10。'},
-    heap: {t:'系统核心内存', b:'指 system_server 的 Java 堆占用（MB）。\n阈值：450 泄压（trim 开始清理）、460 GC 加速（ART GC 线程提权 -15 并绑大核）、470 告警、480 极限压制、496 OOM 线（接近系统强杀）。\n数值来自 collect_stats.ssheap（KB），与危机链同源；刻度条按 496MB 归一化。'},
-    crisis: {t:'内存细节（技术口径）', b:'阈值按当前底层常量：450MB trim / 460MB GC 加速 / 470MB 告警 / 480MB 极限压制 / 496MB OOM 线。数值来自 collect_stats.ssheap（KB）与 run/ 状态文件；危机建议与计数为本日志周期累计（日志超 512KB 自动截断后从零重新计数）。\nGC 加速 = 堆高时提权 ART GC 守护线程（nice -15 + 绑大核）；泄压失败 = am send-trim-memory 不可达，转内核 drop_caches 兜底。'},
-    counts: {t:'保护记录怎么读', b:'「本周期事件」指本日志周期内 14 类保护动作的累计次数；日志超过 512KB 自动截断后从零重新计数（v1.13.0 起由 256KB 上调）。\n「已触发」表示这一类真的动过；「待命中」表示条件没满足、没做任何调整。下面「每一类具体管什么」保留原始口径与触发条件，供排查用。'},
-    constraints: {t:'运行状态与限制', b:'眼镜相关治理 = FR-RN1：对雷鸟 App 后台渲染 / 池线程温和降权；语音链路在启动削峰时被单独豁免。「已暂停」表示 disable_rayneo_guard 标记存在，治理临时关闭（安全状态）。\n未完成的更新回滚 = staged rollback（state=enabling），数量大于 0 时严禁重启。\n系统异常记录 = HAL tombstone，来自 dropbox 的历史崩溃档案，多数非致命。\n模块只做只读观测与逐线程优先级调度，不发起重启、拆回滚或停止应用。'},
+    heap: {t:'系统核心内存', b:'指 system_server 的 Java 堆占用（MB）。\n采用零 Binder 流式读取 /proc/pid/smaps 中 4 类 Dalvik 匿名堆段。\n阈值：440 预警（安全手动软重启窗口建议）、470 告警、496 OOM 线。\n刻度条按 496MB 归一化。'},
+    crisis: {t:'保护与状态细节（技术口径）', b:'全域相机护航 = 0-fork 硬件 ticks 探测，provider 提权至 prio0（退出还原 prio4）；\n无障碍自愈备份 = 每小时备份 enabled_accessibility_services，软重启后 15s 自动自愈；\n前台护盾 = mem PSI ≥15% 或 cpu PSI ≥35%，温和提权 -10；\n异常熔断 = 连续 3 轮 ≥150% CPU 且非高换页，温和降权 +10 与 Idle I/O；\n数值来自 collect_stats 与 run/ 状态文件。'},
+    counts: {t:'保护记录怎么读', b:'「本周期事件」指本日志周期内 8 类保护动作的累计次数；日志超过 512KB 自动截断后从零重新计数（v1.13.0 起由 256KB 上调）。\n「已触发」表示这一类真的动过；「待命中」表示条件没满足、没做任何调整。下面「每一类具体管什么」保留原始口径与触发条件，供排查用。'},
+    constraints: {t:'运行状态与限制', b:'眼镜与蓝牙调度：已将雷鸟 com.rayneo.venus.pub 纳入白名单并实行消费者平权保护，免受任何降权或锁核干预。\n未完成的更新回滚 = staged rollback（state=enabling），数量大于 0 时严禁重启。\n系统异常记录 = HAL tombstone，来自 dropbox 的历史崩溃档案，多数非致命。\n模块只做只读观测与逐线程优先级调度，不发起重启、拆回滚或停止应用。'},
     rollback: {t:'什么是未完成的更新回滚', b:'staged rollback 是系统已下载、等待重启生效的更新回滚会话（state=enabling）。\n此时重启可能触发完整重启并丢失临时 root，因此面板显示「禁止重启」，并抑制自动重启建议。模块绝不代执行任何重启，请先手动核查回滚状态。'},
     snap: {t:'最近记录', b:'内存异常记录（blackbox）与系统重启记录（incident）来自模块 run/ 目录的快照文件。\n这里只显示解析后的时间、类型与原因；原始文件名、key=value 日志收在首屏「查看原始诊断数据」里。文件位于 /data/adb/modules/rmg_memtonic/run/。'},
-    ops: {t:'三个操作的区别', b:'开启保护：保护没在跑时拉起 4 个进程并做一次内存整理。\n暂停保护：全部退出、还原所有优先级调整，之后不再护航。\n重新启动保护：先停后拉，约 5-10 秒无护航，用于保护异常时自愈。\n三者都会弹确认框；24h A/B 基线期内重启守护会污染基线，非必要不要用。'},
-    'btn-start': {t:'「开启保护」会做什么', b:'拉起 4 个保护进程并立刻做一次内存整理，约 30 秒。\n技术细节：执行 service.sh 后调用 memtonic.sh optimize，对 Launcher 提权，息屏时执行内存整理。\n若保护已在运行，按钮会被禁用，避免重复启动。'},
-    'btn-stop': {t:'「暂停保护」会做什么', b:'让 4 个保护进程全部退出；之前做过的所有优先级调整会原样还原，期间不再有任何护航。\n技术细节：调用 memtonic.sh stop；降权与核亲和约束均会无损还原（FR-RN1 降权状态同步清场）。'},
-    'btn-restart': {t:'「重新启动保护」会做什么', b:'先全部停下、再重新拉起 4 个保护进程，约 5-10 秒没有护航；所有调整会原样还原。\n⚠ 24h A/B 基线期重启守护会污染基线，仅在必要时使用。\n技术细节：memtonic.sh stop → service.sh 幂等拉起，不调用阻塞式 restart。'},
+    ops: {t:'三个操作的区别', b:'开启保护：保护没在跑时拉起 2 个核心守护进程并做一次内存整理。\n暂停保护：全部退出、还原所有优先级调整，之后不再护航。\n重新启动保护：先停后拉，约 5-10 秒无护航，用于保护异常时自愈。\n三者都会弹确认框；24h A/B 基线期内重启守护会污染基线，非必要不要用。'},
+    'btn-start': {t:'「开启保护」会做什么', b:'拉起 2 个核心守护并立刻做一次内存整理，约 30 秒。\n技术细节：执行 service.sh 后调用 memtonic.sh optimize，对 Launcher 提权，息屏时执行内存整理。\n若保护已在运行，按钮会被禁用，避免重复启动。'},
+    'btn-stop': {t:'「暂停保护」会做什么', b:'让 2 个核心守护全部退出；之前做过的所有优先级调整会原样还原，期间不再有任何护航。\n技术细节：调用 memtonic.sh stop；降权与核亲和约束均会无损还原（FR-RN1 降权状态同步清场）。'},
+    'btn-restart': {t:'「重新启动保护」会做什么', b:'先全部停下、再重新拉起 2 个核心守护，约 5-10 秒没有护航；所有调整会原样还原。\n⚠ 24h A/B 基线期重启守护会污染基线，仅在必要时使用。\n技术细节：memtonic.sh stop → service.sh 幂等拉起，不调用阻塞式 restart。'},
     'btn-refresh': {t:'「刷新」会做什么', b:'立刻重新读取一次状态，不改变任何设置、不动保护进程、不重启任何东西。'},
     'alert-reboot': {t:'关于手动重启', b:'软重启仅为倒数第二手段，模块绝不代执行，须由您手动判断；重启前确认无 staged rollback 活动。\n「trim 两次无效」表示系统两次尝试清理内存都没降下来，通常是真泄漏特征。'},
     'alert-startrejected': {t:'重复启动被拦下', b:'已有存活实例的幂等保护，无需处理。这是正常防重机制，不是故障。'},
@@ -431,20 +432,14 @@
   // ---------- 4. 渲染（定点更新，不整页重建） ----------
   // [id, kvKey, title, 口径说明, 触发条件的白话描述]
   var CARD_DEFS = [
-    ['shield','shield','前台加速','系统拥堵时精准护航前台渲染链的次数','CPU PSI ≥35% 或 mem PSI ≥10%'],
-    ['storm','storm','开机护航','框架软重启 / 开机风暴 / 借相机风暴态窗口次数','system_server 重启或 FR-C3 风暴态'],
-    ['crash','crash','崩溃记录','捕获到的崩溃 / ANR 事件数','dropbox 出现新崩溃'],
-    ['rogue','rogue','后台限速','长时间高 CPU 应用的温和降权 / 核亲和约束次数','连续 3 轮 >50% CPU'],
-    ['compact','compact','内存整理','按需执行内存整理的次数','息屏高压 / kswapd 换页 / 预测态前置压实'],
-    ['blackbox','blackbox','异常快照','内存风暴时的现场快照落盘数','内存压力 >=25% 持续 2 分钟'],
-    ['rollback','rollback','回滚风险','检出 staged rollback 高危状态的次数','出现待生效 / enabling 的回滚会话'],
-    ['mjburst','mjburst','卡顿预警','前台 major fault 突增预警次数','突发 majflt（灾难级 >10 万/60s）'],
-    ['bt','bt','蓝牙保护','蓝牙音频栈 / LE-GATT 压力 / 断连重连护航次数','蓝牙放音或 GATT 压力且系统拥堵'],
-    ['flush','flush','相机加速','face 服务借相机时提权 camera provider 线程（59-79 线程，15s 或条件消失还原）','provider 线程 D 状态 或 CPU PSI ≥35% / mem PSI ≥10%'],
-    ['gcboost','gcboost','回收加速','堆危机时 ART GC 守护线程提权 -15 并绑大核、加速回收的次数','堆 ≥460MB 或泄压失败 ≥2'],
-    ['ssprobe','ssprobe','内存检查','system_server Java 堆水位探测与 trim 泄压次数','RSS ≥700MB / 线程 ≥600 / 定时探测 / trim 复测'],
-    ['forecast','forecast','提前整理','内存余量预测态与前置压实次数','avail <2.5GB 且 swap >7.5GB 连续 3 轮'],
-    ['bt3','bt3','眼镜重连','雷鸟 BR/EDR 断连后 LE 重连窗口护航次数','ACL_DISCONNECTED(RayNeo) 广播命中']
+    ['cam','cam','全域相机','原生相机/三方扫码/人脸识别硬件级极速护航与 I/O 提权次数','0-fork 硬件 ticks 跳变或相机激活'],
+    ['shield','shield','前台护盾','系统高压拥堵时精准护航前台渲染链与主线程的次数','mem PSI ≥15% 或 cpu PSI ≥35%，温和提权 -10'],
+    ['sc','sc','截屏预警','检测到截屏时快速提权前台并避让内存压实的次数','截屏目录产生新图片文件'],
+    ['storm','storm','风暴护航','开机启动、框架软重启风暴态平稳过渡及无障碍自愈次数','system_server 重启或无障碍异常'],
+    ['rogue','rogue','异常熔断','后台长时间极端高负载/高 I/O 进程温和让步与降级次数','连续 3 轮 ≥150% CPU 且非高换页，温和降权 +10 与 Idle I/O'],
+    ['compact','compact','息屏整理','仅在息屏且系统真正承压并满足安全门禁时的内存整理次数','息屏 + MemFree≥800MB + PSI≥15%'],
+    ['rollback','rollback','回滚告警','检出 staged rollback enabling 高危状态防丢 Root 次数','检出待生效回滚会话'],
+    ['crash','crash','崩溃雷达','捕获系统崩溃、ANR 与极端内存现场快照落盘总数','dropbox 出现新崩溃或黑匣子快照触发']
   ];
   // UI-R1: 卡片只留数字+标题+状态；口径与触发条件收进折叠说明，消除文字墙
   function buildCards(){
@@ -479,20 +474,19 @@
   }
   // 阈值取自 mt_lib.sh 当前常量（v1.13.14 前移后）：
   // SS_TRIM_KB=460800(450MB) / SS_GC_KB=471040(460MB) / SS_ALERT_KB=481280(470MB) / OOM≈507904(496MB)
-  var HEAP_TRIM=460800, HEAP_GC=471040, HEAP_ALERT=481280, HEAP_OOM=507904;
+  var HEAP_WARN=450560, HEAP_ALERT=481280, HEAP_OOM=507904;
   function heapBand(kb){
     var n = parseInt(kb,10);
-    if (isNaN(n) || n <= 0) return {key:'na', label:'无数据', color:'var(--tx2)', pct:0};
+    if (isNaN(n) || n <= 0) return {key:'na', label:'待采集', color:'var(--tx2)', pct:0};
     var pct = Math.min(100, Math.round(n*100/HEAP_OOM));
     if (n >= HEAP_OOM)   return {key:'critical', label:'临界 / OOM 线', color:'var(--err)', pct:100};
     if (n >= HEAP_ALERT) return {key:'alert', label:'告警区 ≥470MB', color:'var(--err)', pct:pct};
-    if (n >= HEAP_GC)    return {key:'gc', label:'GC 加速区 ≥460MB', color:'#fb923c', pct:pct};
-    if (n >= HEAP_TRIM)  return {key:'trim', label:'泄压区 ≥450MB', color:'var(--warn)', pct:pct};
+    if (n >= HEAP_WARN)  return {key:'warn', label:'预警区 ≥440MB', color:'var(--warn)', pct:pct};
     return {key:'ok', label:'正常', color:'var(--ok)', pct:pct};
   }
   function fmtGuard(kv){
     // 键名与设备侧 k=${pf%.pid} 输出一致（memtonic/guard/cpuguard/fluencyshield）
-    var names = [['memtonic','主'],['guard','风暴'],['cpuguard','CPU'],['fluencyshield','护盾']];
+    var names = [['memtonic','主守护'],['fluencyshield','实时护盾']];
     var out = [], alive = 0;
     for (var i=0;i<names.length;i++){
       var k = names[i][0], lab = names[i][1], ok = kv['g_'+k] === 'alive';
@@ -537,9 +531,9 @@
   }
   function fmtCrisis(kv){
     return {
-      gcRelief: (int0(kv.gcboost) > 0 ? 'GC 加速中' : '未介入') + ' / 泄压失败 ' + int0(kv.relief_fail) + ' 次',
-      adviseForecast: '止损建议 ' + int0(kv.advise_cnt) + ' 次 / 预测态 ' + (kv.forecast === 'ON' ? 'ON' : 'OFF'),
-      probePaging: fmtStamp(kv.last_probe) + ' / ' + fmtStamp(kv.paging_last)
+      camGuard: kv.cam_guard === 'ACTIVE' ? '护航中' : (kv.cam_guard === 'IDLE' ? '待命' : '--'),
+      a11yBak: kv.a11y_bak === 'READY' ? '已就绪' : (kv.a11y_bak === 'NONE' ? '未备份' : '--'),
+      probePaging: fmtStamp(kv.last_probe)
     };
   }
   // UI-R1: 快照原始输出 -> 时间/类型/原因三列（不显示文件名与装饰分隔线）
@@ -686,7 +680,7 @@
     if (hbar){ hbar.style.width = band.pct + '%'; hbar.style.background = band.color; }
     var hcls = band.key === 'ok' ? 'b-ok' : (band.key === 'trim' ? 'b-warn' : (band.key === 'na' ? 'b-mut' : 'b-err'));
     var hbl = document.getElementById('st_heap_band');
-    var bandText = {ok:'正常', trim:'开始清理', gc:'加速回收', alert:'接近上限', critical:'危险', na:'暂无数据'};
+    var bandText = {ok:'正常', trim:'开始清理', gc:'加速回收', alert:'接近上限', critical:'危险', na:'待采集'};
     if (hbl) hbl.innerHTML = '<span class="badge ' + hcls + '">' + (bandText[band.key] || band.label) + '</span>';
   }
 
@@ -762,14 +756,12 @@
       // P0: 新增状态/危机链/rollback 数据全部并入本次 exec（不增加 exec 次数，省电约束）
       var stateCmd =
         '; echo ---; echo ver=$(grep -m1 ^version= ' + BASE + '/module.prop | cut -d= -f2) vc=$(grep -m1 ^versionCode= ' + BASE + '/module.prop | cut -d= -f2); '
-        + 'for pf in memtonic.pid guard.pid cpuguard.pid fluencyshield.pid; do p=$(cat ' + BASE + '/run/$pf 2>/dev/null); p=${p%%:*}; k=${pf%.pid}; [ -n "$p" ] && [ -d /proc/$p ] && echo g_$k=alive || echo g_$k=dead; done; '
-        + 'echo root=$(id -u); [ -f ' + BASE + '/run/disable_rayneo_guard ] && echo rayneo_bypass=ON || echo rayneo_bypass=OFF; '
-        + '_rl=$(awk "END{print NR}" ' + BASE + '/run/rayneo_governor.lst 2>/dev/null); echo rayneo_lines=${_rl:-0}; '
-        + '_sl=' + BASE + '/run/memtonic.log; _st=$(awk "/event=start_rejected/{a++} /event=root_lost_exit/{b++} /act=ss_heap_relief/ && /result=fail/{c++} /advise=soft_reboot/{d++} END{print a+0,b+0,c+0,d+0}" "$_sl" 2>/dev/null); set -- $_st; _r1=${1:-0}; _r2=${2:-0}; _r3=${3:-0}; _r4=${4:-0}; echo ex_rejected=$_r1; echo ex_rootlost=$_r2; '
-        + 'echo ---; _gb=$(awk "END{print NR}" ' + BASE + '/run/gc_boost.bak 2>/dev/null); echo gcboost=${_gb:-0}; '
-        + 'echo relief_fail=$_r3; echo advise_cnt=$_r4; '
-        + '[ -f ' + BASE + '/run/mem_forecast.flag ] && echo forecast=ON || echo forecast=OFF; '
-        + 'echo paging_last=$(cat ' + BASE + '/run/paging_storm.last 2>/dev/null); '
+        + 'for pf in memtonic.pid fluencyshield.pid; do p=$(cat ' + BASE + '/run/$pf 2>/dev/null); p=${p%%:*}; k=${pf%.pid}; [ -n "$p" ] && [ -d /proc/$p ] && echo g_$k=alive || echo g_$k=dead; done; '
+        + 'echo root=$(id -u); '
+        + '_sl=' + BASE + '/run/memtonic.log; _st=$(awk "/event=start_rejected/{a++} /event=root_lost_exit/{b++} /(advise|suggest)=soft_reboot/{d++} END{print a+0,b+0,d+0}" "$_sl" 2>/dev/null); set -- $_st; _r1=${1:-0}; _r2=${2:-0}; _r4=${3:-0}; echo ex_rejected=$_r1; echo ex_rootlost=$_r2; '
+        + 'echo ---; echo advise_cnt=$_r4; '
+        + '[ -f ' + BASE + '/run/camera_active.flag ] && echo cam_guard=ACTIVE || echo cam_guard=IDLE; '
+        + '[ -s ' + BASE + '/run/a11y.bak ] && echo a11y_bak=READY || echo a11y_bak=NONE; '
         + '_lp=$(ls -t ' + BASE + '/run/ssheap-*.log 2>/dev/null | head -1); echo last_probe=${_lp##*/}; '
         + 'echo ---; _rbn=0; for j in /data/rollback/*/rollback.json; do [ -f "$j" ] || continue; '
         + 'tr -d "\\n" < "$j" 2>/dev/null | grep -q state.:.enabling && _rbn=$((_rbn+1)); done; echo rb_enabling=$_rbn; '
@@ -802,32 +794,27 @@
       var cr = parseKv(parts[9] || '');
       var rb = parseKv(parts[10] || '');
 
-      // P0-2: 版本 / 四守护 / root / FR-RN1 旁路 / rollback enabling
+      // P0-2: 版本 / 双守护 / root / FR-RN1 旁路 / rollback enabling
       set('st_ver', st.ver || '--');
       document.getElementById('st_ver').setAttribute('data-vc', st.vc || '');
       var gd = fmtGuard(st);
       var hasGuards = false;
       for (var gk in st){ if (gk.indexOf('g_') === 0) { hasGuards = true; break; } }
       document.getElementById('st_guards').innerHTML = hasGuards
-        ? gd.html + ' <span class="badge b-mut" style="font-size:10px;padding:1px 6px">' + gd.alive + '/4</span>'
+        ? gd.html + ' <span class="badge b-mut" style="font-size:10px;padding:1px 6px">' + gd.alive + '/2</span>'
         : '--';
-      set('st_guard_count', hasGuards ? (gd.alive + '/4') : '--');
+      set('st_guard_count', hasGuards ? (gd.alive + '/2') : '--');
       document.getElementById('st_root').textContent = st.root === '0'
         ? '正常'
         : ((st.root === undefined || st.root === '') ? '--' : '异常');
-      var rbx = st.rayneo_bypass;
-      document.getElementById('st_rayneo').innerHTML = rbx === 'ON'
-        ? '<span class="badge b-warn">已暂停</span>'
-        : (rbx === 'OFF'
-            ? '<span class="badge b-ok">运行中' + (int0(st.rayneo_lines) > 0 ? ' · 已调 ' + st.rayneo_lines + ' 个线程' : '') + '</span>'
-            : '--');
+      document.getElementById('st_rayneo').innerHTML = '<span class="badge b-ok">平权白名单保护</span>';
       set('st_rollback', rb.rb_enabling === undefined || rb.rb_enabling === '' ? '--' : rb.rb_enabling);
       set('st_hal', fmtHal(rb.hal_total, rb.hal_latest).text);   // P2: HAL tombstone 累计/最近
       renderSafety(rb.rb_enabling);
-      // P0-1: 危机链（GC 加速 / 泄压失败 / 止损建议历史 / 预测态 / 最近探测）
+      // P0-1: 实时护航与无障碍状态
       var fc = fmtCrisis(cr);
-      set('st_gc_relief', fc.gcRelief);
-      set('st_advise_forecast', fc.adviseForecast);
+      set('st_camera_guard', fc.camGuard);
+      set('st_a11y_backup', fc.a11yBak);
       set('st_probe_paging', fc.probePaging);
       document.getElementById('ver').textContent = 'RMG MemTonic ' + (st.ver || '') + ' · 少卡顿、少崩溃，只调优先级不动数据';
       // UI-R1: 告警结构化——每条独立卡片，原始 key=value 不再直出；UI-R2 主文案白话、术语进 ⓘ
@@ -871,7 +858,7 @@
 
   // ---------- 5. 操作 ----------
   async function doStart(){
-    var ok = await confirmBox('确认开启保护？\n\n会拉起 4 个保护进程，并做一次内存整理，约 30 秒，请保持面板打开。\n\n技术细节：对 Launcher 提权，息屏时执行内存整理。');
+    var ok = await confirmBox('确认开启保护？\n\n会拉起 2 个核心守护，并做一次内存整理，约 30 秒，请保持面板打开。\n\n技术细节：对 Launcher 提权，息屏时执行内存整理。');
     if (!ok) return;
     if (!busyOn('开启保护')) return;
     showMsg('正在开启保护并整理内存…（约 30 秒）', '');

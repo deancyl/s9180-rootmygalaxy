@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# uninstall.sh —— RMG MemTonic v1.13.20 卸载清理
+# uninstall.sh —— RMG MemTonic v2.0.1 卸载清理
 # 停止守护与全部子进程，统一还原所有优先级 / 亲和 / 提权改动，删除运行时文件，
 # 并清理早期遗留在 /data/local/tmp 的文件。
 
@@ -12,21 +12,16 @@ MODDIR=${0%/*}
 # fluency_shield.sh、vk_injector.sh 三个子守护不会被终止；紧随其后的 rm -rf run 又会
 # 删光所有 pid 文件与还原清单 → 孤儿无主、无法再 stop、清单丢失（11-08 审计 P0-1）。
 # 现与 memtonic.sh stop 对齐：pid 文件 + pkill 双保险。
-for pf in "$MODDIR/run/memtonic.pid" \
-          "$MODDIR/run/guard.pid" \
-          "$MODDIR/run/cpuguard.pid" \
-          "$MODDIR/run/fluencyshield.pid"; do
+for pf in "$MODDIR/run/memtonic.pid" "$MODDIR/run/fluencyshield.pid"; do
   p=$(cat "$pf" 2>/dev/null); p=${p%%:*}
-  if [ -n "$p" ] && [ -d /proc/$p ]; then
+  if [ -n "$p" ] && [ -d "/proc/$p" ] && grep -q -E '(memtonic|fluency_shield)' "/proc/$p/cmdline" 2>/dev/null; then
     kill "$p" 2>/dev/null
     sleep 1
-    [ -d /proc/$p ] && kill -9 "$p" 2>/dev/null
+    [ -d "/proc/$p" ] && grep -q -E '(memtonic|fluency_shield)' "/proc/$p/cmdline" 2>/dev/null && kill -9 "$p" 2>/dev/null
   fi
 done
-pkill -9 -f "scripts/cpu_guard.sh" 2>/dev/null
 pkill -9 -f "scripts/fluency_shield.sh" 2>/dev/null
-pkill -9 -f "scripts/storm_guard.sh" 2>/dev/null
-pkill -9 -f "scripts/vk_injector.sh" 2>/dev/null
+pkill -9 -f "scripts/memtonic.sh" 2>/dev/null
 
 # 2. 还原清单中尚未还原的 tid（若有）——卸载不能把别的应用留在降优先级状态
 RLST=/data/local/tmp/memtonic_storm_renice.lst

@@ -1,1666 +1,499 @@
 #!/system/bin/sh
-# mt_lib.sh —— RMG MemTonic 公共库（v1.10.0 - 内存风暴监测/快照/亮屏风暴级压实）
-# v1.10.0: 新增内存风暴三件套（供 cpu_guard 60s 轮挂载，零新增唤醒）：
-#   1. psi_mem_read —— mksh 内建 read 读 /proc/pressure/memory（无 fork，实测 fork 版 9.35ms/次 → 内建 <0.5ms）；
-#   2. fg_majflt_sum —— 单次 awk 汇总 top-app 全部 pid 的 majflt（P2 重负载指纹）；
-#   3. mem_blackbox —— 灾难快照落盘（PSI+meminfo+RSS/majflt Top10，触发式，稀有事件）。
-#   亮屏压实走"风暴级例外"：常规亮屏 GEMINI.md 铁律禁压不变，仅 psi_mem some≥30 例外，
-#   相机/截屏守卫无条件生效。
-# v1.9.12: 全模块大输出传参审计——本库所有 dumpsys 捕获点均为"管道直连过滤"或"子 shell
-#   直连重定向"（capture_incident），无 shell 变量中转；check_rollback_disarm 的 ARG_MAX
-#   缺陷已于 v1.9.11 部署实测修复（详见该函数头注释第 5 条）。
-# 仅供 memtonic.sh（守护主进程）与 storm_guard.sh（护栏子进程）source 使用。
-# 本文件不包含任何顶层执行语句——被直接执行时应立即退出。
-#
-# v1.5.1 紧急热修复：修复 Launcher 优先级错乱、stop还原失效、高优线程降级和快照覆盖风险。
-#
-# v1.5.0 重大升级（融合 Sentinel P0 核心安全哨兵 + 三大性能瓶颈攻坚）：
-#   1. Restore 批量秒级极速还原：同目标 nice 分组批量聚合，通过 toybox renice -p
-#      批量传参，将 3600 次串行子进程调用缩减为数十次，耗时从 185s 骤降至 <2s（提速 98%）；
-#   2. 启动风暴 20s 平滑冷却期：连续 3 次低于 PSI 阈值后增加 20s 冷却确认，防二次广播反弹；
-#   3. 动态前台服务免削峰：基于 /proc/$pid/oom_score_adj <= 200 动态免削峰（音乐、录音、穿戴），
-#      无需维护庞大白名单，杜绝后台听歌爆音；
-#   4. Sentinel P0 融合：
-#      - check_staged_rollback：事前检测 dumpsys rollback 挂起状态（防硬重启丢 Root）；
-#      - capture_incident：框架重启 60s 内自动产出结构化黑匣子快照 run/incident-<ts>.log；
-#      - check_root_liveness：KernelSU 驱动解挂自检并优雅退出。
-#
-# 结构说明（v1.3.0 重构教训）：Android 16 的 mksh 后台化"shell 函数"会瞬时死亡
-# （实测矩阵：直接子壳 & 可靠，函数 & 必死），因此护栏必须是独立外部脚本；
-# 公共函数与常量抽到本库供两个进程 source，避免复制。
+# mt_lib.sh —— RMG MemTonic 公共函数库 (v2.0.1)
+MT_VERSION="v2.0.1"
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" >/dev/null 2>&1 && pwd)"
-# v1.12.1: WebUI exec（KernelSU ksu.exec）等 `$0`=shell 自身的上下文 source 本库时，
-# dirname($0) 推导失效（实测 MODDIR 错指 /system → PIDF/LOG 全部指到不存在的
-# /system/run/ → WebUI 显示"已停止(pid NA)/计数全 0"）。派生目录不含本库时
-# 回落到模块固定安装路径；常规执行/被本模块脚本 source 的路径不受影响。
-[ -f "$SCRIPT_DIR/mt_lib.sh" ] || SCRIPT_DIR=/data/adb/modules/rmg_memtonic/scripts
-MODDIR="${SCRIPT_DIR%/*}"
-RUN=$MODDIR/run          # 运行时私有目录（root 700）
-LOG=$RUN/memtonic.log    # 审计日志（超 512KB 字节基准截断，v1.13.0: 256KB→512KB 保住更长取证窗口）
-MODULE_PROP=$MODDIR/module.prop  # v1.11.0: 模块声明文件（卡片描述动态统计的写入目标）
-MT_VERSION=v1.13.20              # v1.13.20: 模块版本（与 module.prop 同步，动态描述引用）
-# v1.13.20: 雷鸟穿戴应用包名常量（供 cpu_guard 与 restore_all_on_exit 共享，避免局部变量作用域丢失导致卸载/停止漏还原）
-RAYNEO_PKG="com.rayneo.venus.pub"
-
-# v1.13.19: am 走 binder 到 system_server，堆濒死时该调用会挂死（11-07 取证 22/22 fail
-# 且每次阻塞到超时）。有 timeout 就包一层，把单次上限压到 2s，防止 cpu_guard 主循环被
-# 拖住。toybox 自 Android 8 起提供 timeout；缺失时降级为裸调用（与原行为一致）。
-if command -v timeout >/dev/null 2>&1; then AM_TO="timeout 2"; else AM_TO=""; fi
-
-# v1.13.19: 显式绑定系统 Toybox 的 renice。
-# KernelSU 用 BusyBox ash 独立模式（ASH_STANDALONE=1）执行 service.sh，PATH 中 busybox
-# applet 优先于 /system/bin 的 toybox；而本模块对 renice 的语义假设（-n 为相对增量、
-# 支持多 PID 批量）是在 /system/bin/renice 上实测确认的。两个实现混用时会出现
-# "模块内正常、手动 su 后异常"这类极难定位的偏差。
-# 用同名函数覆盖而非改 20+ 处调用点——避免漏改。后续新增调用也自动生效。
-_sys_renice=/system/bin/renice
-[ -x "$_sys_renice" ] || _sys_renice=$(command -v renice 2>/dev/null)
-if [ -n "$_sys_renice" ]; then
-  renice() { "$_sys_renice" "$@"; }
-fi
-
-# v1.13.6 (F2): notify_alert <类型> <文本> —— 关键告警推送 Android 通知。
-# 通道实测（10-29 16:00）：root shell `cmd notification post` exit=0 可达用户 0。
-# 成本模型：纯事件驱动（仅在告警落旗标时刻发一次，每类 2h 限频去重）——稳态零开销，
-# 无新增常驻进程/轮询。通知 tag 按类型区分，同 tag 重发=更新而非堆积。
-notify_alert() {
-  _na_type=$1; shift
-  _na_text="$*"
-  [ -n "$_na_type" ] && [ -n "$_na_text" ] || return 0
-  _na_file="$RUN/notify_${_na_type}.ts"
-  _na_now=$(date +%s)
-  _na_last=$(cat "$_na_file" 2>/dev/null); case "$_na_last" in ''|*[!0-9]*) _na_last=0;; esac
-  [ $((_na_now - _na_last)) -lt 7200 ] && return 0
-  echo "$_na_now" > "$_na_file" 2>/dev/null
-  cmd notification post -S bigtext -t "RMG MemTonic 告警" "MemTonicAlert-$_na_type" "$_na_text" >/dev/null 2>&1
-  return 0
-}
-PIDF=$RUN/memtonic.pid   # 守护进程记录，格式 "pid:进程启动时间"
-GUARD_PIDF=$RUN/guard.pid
-LOCK=$RUN/lock           # 维护互斥锁（mkdir 原子锁，含陈旧锁回收）
-STORM_FLAG=$RUN/storm_active   # 护栏窗口活动标志（目录）
-RLST=/data/local/tmp/memtonic_storm_renice.lst  # 还原清单（tid 原nice 设置nice 包名）
-ZRAM=/sys/block/zram0
-CAMERA_ACTIVE_FLAG="$RUN/camera_active.flag"   # Camera Sentinel 状态锁（相机活跃期间存在）
-CAMERA_VIP_BAK="$RUN/camera_vip.bak"           # Camera Sentinel nice 备份（用于退出无损还原）
-CAMERA_AFF_BAK="$RUN/camera_aff.bak"           # v1.12.0: 相机 provider 核亲和备份（tid 原mask，退出还原）
-SCREENSHOT_ACTIVE_FLAG="$RUN/screenshot_active.flag" # Screenshot Sentinel 状态锁（截屏处理期间存在）
-SCREENSHOT_END_TS="$RUN/screenshot_end.ts"           # Screenshot Sentinel 超时时间戳
-ROLLBACK_WARNED_TS="$RUN/rollback_warned.ts"         # Fix-D: staged_rollback 告警去重时间戳
-ROLLBACK_DISARM_TS="$RUN/rollback_disarm.ts"         # v1.9.11: rollback_disarm 去重时间戳
-ROLLBACK_DISARM_ENABLE="$RUN/rollback_disarm.enable" # v1.9.11: 用户开关文件（存在=启用真实 abandon，默认 dry-run）
-ROLLBACK_DISARM_FLAG="$RUN/rollback_disarmed.flag"   # v1.9.11: 处置成功标记（跨会话保留，供快速检查）
-
-CHECK_INTERVAL=3600
-STORM_WINDOW=480
-STORM_POLL=5
-STORM_SCAN=15
-STORM_SSPID_FRESH=180
-STORM_EXIT_PSI=10
-STORM_NICE_APP=5
-STORM_MAX_APP=60   # v1.9.7: 单风暴窗口削峰应用总量上限（防软重启后对上百冷启动应用集体降权）
-LAUNCHER_NICE=-4
-LAUNCHER_PKG=com.sec.android.app.launcher
-# 静态白名单兜底（前缀匹配；root/system 进程本就被 uid 过滤排除）
-# v1.9.7: 相机与相册入白名单（实测 20:55:32 / 21:42:33 两次 storm 窗口内相机被 nice 0→5 降权，
-# 与"保相机"设计目标相反——60fps 录制对调度权重极度敏感）
-WHITELIST_PKGS="li.songe.gkd cn.myflv.noactive com.omarea me.piebridge.brevent rikka. com.catalinagroup. com.nutomic. com.wangc. com.follow.clash com.github.metacubex.clash.meta com.sec.android.app.camera com.sec.android.gallery3d"
-
-CLK_TCK=$(getconf CLK_TCK 2>/dev/null)
-case "$CLK_TCK" in ''|*[!0-9]*|0) CLK_TCK=100;; esac
-
-# logcat 镜像必须用绝对路径调用系统二进制：
-# 写 "log -t MemTonic" 时第一个词会命中本文件的 log() 函数（shell 函数优先于
-# PATH），导致无限递归——v1.2.1 已埋雷，v1.3.0 两次引爆。教训：镜像一律走 /system/bin/log。
-KLOG="/system/bin/log -t MemTonic"
-
-# ---- 日志 ----
-# logx <级别> <内容>：L=E/A/W/X 同步镜像 logcat（tag MemTonic）；L=S 仅写文件。
-# 文件写失败时整行降级到 logcat；超 512KB 截断（v1.13.0: 256KB→512KB——10-25 深夜
-# OOM 窗口的审计行被风暴期日志量挤出截断面，加大一档）。
-# v1.13.2 耗电治理：截断大小检查（wc -c 全文件读 + fork）从每次写都查改为每 64 次
-# 写查一次——日志超限最多多滞留 64 行（~10KB），省下风暴期最热的隐藏 fork。
-_logx_n=0
-logx() {
-  lv=$1; shift
-  line="$(date '+%m-%d %H:%M:%S') L=$lv $*"
-  if ! echo "$line" >> "$LOG" 2>/dev/null; then
-    $KLOG "$lv $*" 2>/dev/null
-    return
-  fi
-  case "$lv" in
-    S) ;;
-    *) $KLOG "$lv $*" 2>/dev/null ;;
-  esac
-  _logx_n=$((_logx_n + 1))
-  if [ $((_logx_n % 64)) -eq 0 ]; then
-    if [ "$(wc -c < "$LOG" 2>/dev/null)" -gt 524288 ]; then
-      # v1.13.7 (R3): 轮转改 cp+truncate 保 inode——旧 tail+mv 会孤儿化并发写者的 fd
-      # （10-30 实证 1/4041 行撕裂）。mkdir 锁防多进程同时轮转；cp 全量留档 .old（比旧
-      # 方案的 tail-256KB 保留更多历史）；truncate 原地清空，并发 append 无损续写。
-      if mkdir "$LOG.rotlock" 2>/dev/null; then
-        cp -p "$LOG" "$LOG.old" 2>/dev/null
-        : > "$LOG" 2>/dev/null
-        rmdir "$LOG.rotlock" 2>/dev/null
+# v2.0.1: 规范路径解析——被 . (source) 调用时 $0 常为 sh 或 /system/bin/sh，
+# 严禁盲信 ${0%/*} 导致 MODDIR 退化为 /system/bin！
+_mt_resolve_moddir() {
+  case "$0" in
+    */*)
+      _c=${0%/*}
+      case "$_c" in */scripts) _c=${_c%/scripts} ;; esac
+      if [ -f "$_c/module.prop" ] && [ -f "$_c/scripts/mt_lib.sh" ]; then
+        echo "$_c"
+        return 0
       fi
-    fi
+      ;;
+  esac
+  if [ -f "/data/adb/modules/rmg_memtonic/scripts/mt_lib.sh" ]; then
+    echo "/data/adb/modules/rmg_memtonic"
+  elif [ -f "/data/adb/modules_update/rmg_memtonic/scripts/mt_lib.sh" ]; then
+    echo "/data/adb/modules_update/rmg_memtonic"
+  else
+    echo "/data/adb/modules/rmg_memtonic"
   fi
 }
-# 兼容旧接口：maintenance 内的人类可读消息走 I 级
-log() { logx I "$@"; }
+MODDIR=$(_mt_resolve_moddir)
+unset -f _mt_resolve_moddir 2>/dev/null || true
 
-# 当前可用内存（KB）
-avail_kb() { awk '/MemAvailable/{print $2}' /proc/meminfo; }
+RUN=$MODDIR/run
+PIDF=$RUN/memtonic.pid
+GUARD_PIDF=$RUN/guard.pid
+LOG=$RUN/memtonic.log
+MODULE_PROP=$MODDIR/module.prop
+LOCK=$RUN/compact.lock
 
-# psi_val <cpu|memory|io> <some|full>：PSI avg10（整数 %）；读取失败输出空
+CAMERA_ACTIVE_FLAG=$RUN/camera_active.flag
+CAMERA_VIP_BAK=$RUN/camera_vip.bak
+CAMERA_AFF_BAK=$RUN/camera_affinity.bak
+SCREENSHOT_ACTIVE_FLAG=$RUN/screenshot_active.flag
+SCREENSHOT_END_TS=$RUN/screenshot_end.ts
+
+SS_HEAP_KB_FILE=$RUN/ss_heap.kb
+SS_HEAP_HIST=$RUN/ss_heap.hist
+SS_SNAP_TS=$RUN/ss_snap.ts
+SS_SNAP_CLEAN_TS=$RUN/ss_snap_clean.ts
+SS_HEAP_WARN_KB=450560      # 440MB 预警线
+SS_SNAP_CRISIS_KB=491520    # 480MB 危机线
+SS_SNAP_COOL=3600           # 非危机态快照每小时最多 1 个
+
+STORM_FLAG=$RUN/storm_active.flag
+RLST=/data/local/tmp/memtonic_storm_renice.lst
+ROGUE_LST=$RUN/cpu_rogue_renice.lst
+DROPBOX=/data/system/dropbox
+DROPBOX_STATE=$RUN/dropbox_state.txt
+
+CHECK_INTERVAL=60
+STORM_WINDOW=180
+STORM_SCAN=5
+STORM_EXIT_PSI=20
+STORM_MAX_APP=180
+STORM_NICE_APP=5
+
+LAUNCHER_PKG="com.sec.android.app.launcher"
+LAUNCHER_NICE=-4
+RAYNEO_PKG="com.rayneo.venus.pub"
+WHITELIST_PKGS="com.rayneo.venus.pub com.google.android.apps.bard com.tencent.wework com.android.bluetooth com.omarea.vtools com.omarea.gesture com.topjohnwu.magisk io.github.vvb2060.magisk com.github.metacubex.clash.meta com.v2ray.ang org.telegram.messenger com.tencent.mm"
+
+mkdir -p "$RUN" 2>/dev/null
+chmod 700 "$RUN" 2>/dev/null
+
+notify_alert() {
+  _ch=$1; _msg=$2; [ -n "$_msg" ] || return 0
+  command -v cmd >/dev/null 2>&1 && cmd notification post -S bigtext -t "RMG MemTonic" "tag_$_ch" "$_msg" >/dev/null 2>&1
+}
+
+logx() {
+  _lvl=$1; shift; _msg="$*"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$_lvl] $_msg" >> "$LOG" 2>/dev/null
+  if [ -f "$LOG" ]; then
+    _sz=$(wc -c < "$LOG" 2>/dev/null)
+    case "$_sz" in ''|*[!0-9]*) ;; *)
+      [ "$_sz" -ge 524288 ] && tail -c 262144 "$LOG" > "$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG" 2>/dev/null;;
+    esac
+  fi
+}
+log() { logx I "$*"; }
+avail_kb() { awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null; }
+
 psi_val() {
-  awk -v t="$2" '$1==t{for(i=2;i<=NF;i++)if($i~/^avg10=/){split($i,a,"=");print a[2];exit}}' \
-    /proc/pressure/$1 2>/dev/null
+  _res=$(awk -v r="$2" '$1==r{for(i=1;i<=NF;i++) if($i ~ /^avg10=/) {sub(/avg10=/,"",$i); print $i; exit}}' /proc/pressure/$1 2>/dev/null)
+  echo "${_res:-0.00}"
 }
 
-# self_cpu_ms <pid>：目标进程累计 CPU 时间（毫秒），用于"不增加负担"的数据证明
 self_cpu_ms() {
-  awk -v hz="$CLK_TCK" '{sub(/^[0-9]+ \([^)]*\) /,""); printf "%d", ($12+$13)*1000/hz}' \
-    /proc/$1/stat 2>/dev/null
+  [ -n "$1" ] && [ -r "/proc/$1/stat" ] || { echo 0; return; }
+  awk '{sub(/^[0-9]+ \(.*\) /,""); print int(($12+$13)*10)}' "/proc/$1/stat" 2>/dev/null
 }
 
-# snapshot：S 级快照（守护每小时 / 护栏窗口内每轮扫描）
 snapshot() {
-  a=$(avail_kb)
-  sw=$(awk '/^SwapTotal/{t=$2}/^SwapFree/{f=$2}END{print t-f}' /proc/meminfo)
-  l=$(cut -d' ' -f1 /proc/loadavg)
-  n=$(ps -A 2>/dev/null | wc -l)
-  zr=$(awk '{if($1>0)printf "%d",$2*100/$1}' $ZRAM/mm_stat 2>/dev/null)
-  logx S "snap avail_kb=$a swap_kb=${sw:-NA} psi_cpu=$(psi_val cpu some) psi_mem=$(psi_val memory some) psi_io=$(psi_val io some) load1=$l procs=$n self_cpu_ms=$(self_cpu_ms $$) zram_compr_pct=${zr:-NA}"
+  logx S "snap avail_kb=$(avail_kb) psi_cpu=$(psi_val cpu some) psi_mem=$(psi_val memory some) psi_io=$(psi_val io some)"
 }
 
-# alive <pid>：pid 是否为一个存活的 memtonic 循环
 alive() {
-  [ -n "$1" ] && [ -d /proc/$1 ] || return 1
-  _cmd=$(cat /proc/$1/cmdline 2>/dev/null)
-  case "$_cmd" in *memtonic*|*guard*|*shield*) return 0;; *) return 1;; esac
+  _pid=$1; case "$_pid" in ''|*[!0-9]*) return 1;; esac
+  [ -d "/proc/$_pid" ] && grep -q memtonic "/proc/$_pid/cmdline" 2>/dev/null
 }
 
-# 是否熄屏：结合 mHoldingDisplaySuspendBlocker 与 mWakefulness 双重判定
-# 只有在同时满足：释放了显示挂起锁 且 处于休眠/AOD态 时才判定为息屏（安全防掉帧）
 screen_off() {
+  if [ -r /sys/class/backlight/panel0-backlight/brightness ]; then
+    _bl=""; IFS= read -r _bl < /sys/class/backlight/panel0-backlight/brightness 2>/dev/null
+    case "$_bl" in 0) return 0;; ''|*[!0-9]*) ;; *) return 1;; esac
+  fi
   dumpsys power 2>/dev/null | awk '
-    /mHoldingDisplaySuspendBlocker=(false|true)/ {
-      blk = ($0 ~ /mHoldingDisplaySuspendBlocker=false/) ? 1 : 0
-    }
-    /mWakefulness=(Awake|Asleep|Dozing)/ {
-      wake = ($0 ~ /mWakefulness=(Asleep|Dozing)/) ? 1 : 0
-    }
-    END {
-      if (blk == 1 && wake == 1) exit 0; else exit 1;
-    }
+    /mHoldingDisplaySuspendBlocker=(false|true)/ { blk = ($0 ~ /false/) ? 1 : 0 }
+    /mWakefulness=(Awake|Asleep|Dozing)/ { wake = ($0 ~ /(Asleep|Dozing)/) ? 1 : 0 }
+    END { if (blk == 1 && wake == 1) exit 0; else exit 1; }
   '
 }
 
-# psi_mem_pressure_high：检测内存 PSI 压力是否偏高
-# 判定标准：some avg10 >= 15% 或 some avg60 >= 10% 或 full avg10 >= 5%
 psi_mem_pressure_high() {
-  raw=$(cat /proc/pressure/memory 2>/dev/null)
-  [ -n "$raw" ] || return 1
-
-  s10=$(echo "$raw" | awk '$1=="some"{for(i=2;i<=NF;i++)if($i~/^avg10=/){split($i,a,"=");print a[2];exit}}')
-  s60=$(echo "$raw" | awk '$1=="some"{for(i=2;i<=NF;i++)if($i~/^avg60=/){split($i,a,"=");print a[2];exit}}')
-  f10=$(echo "$raw" | awk '$1=="full"{for(i=2;i<=NF;i++)if($i~/^avg10=/){split($i,a,"=");print a[2];exit}}')
-
-  s10_i=${s10%%.*}; case "$s10_i" in ''|*[!0-9]*) s10_i=0;; esac
-  s60_i=${s60%%.*}; case "$s60_i" in ''|*[!0-9]*) s60_i=0;; esac
-  f10_i=${f10%%.*}; case "$f10_i" in ''|*[!0-9]*) f10_i=0;; esac
-
-  if [ "$s10_i" -ge 15 ] || [ "$s60_i" -ge 10 ] || [ "$f10_i" -ge 5 ]; then
-    return 0
-  fi
-  return 1
+  _p=$(psi_val memory some); _p=${_p%%.*}
+  case "$_p" in ''|*[!0-9]*) return 1;; esac
+  [ "$_p" -ge 15 ]
 }
 
-# 进程启动时间（/proc/pid/stat 第 22 字段），用于 PID 复用防护
-pid_starttime() { awk '{print $22}' /proc/$1/stat 2>/dev/null; }
+pid_starttime() {
+  [ -r "/proc/$1/stat" ] && awk '{print $22}' "/proc/$1/stat" 2>/dev/null
+}
 
-# v1.13.20: pkg_of <pid>——零 fork 提取应用包名（cmdline 首段，去掉 :子进程后缀与空格参数）
-# 原实现每次调用启动 strings | head | cut（3 次 fork ≈ 15ms），在遍历活跃应用时成为瓶颈；
-# 改为 read -r -d '' 直接截断 /proc/<pid>/cmdline 第一段参数，彻底规避 NUL 字符拼接多参数的风险；
-# 并在 shell 不支持 -d '' 时优雅 fallback 到普通 read -r。
 pkg_of() {
-  _pkg_name=""
-  [ -r "/proc/$1/cmdline" ] || return 1
-  _po_raw=""
-  IFS= read -r -d '' _po_raw < "/proc/$1/cmdline" 2>/dev/null
-  if [ -z "$_po_raw" ]; then
-    IFS= read -r _po_raw < "/proc/$1/cmdline" 2>/dev/null
-  fi
-  [ -n "$_po_raw" ] || return 1
-  _po_raw=${_po_raw%%:*}
-  _pkg_name="${_po_raw%% *}"
-  echo "$_pkg_name"
-  return 0
+  _p=$1; [ -r "/proc/$_p/cmdline" ] || return 1
+  _cmd=""
+  IFS= read -r _cmd < "/proc/$_p/cmdline" 2>/dev/null
+  [ -n "$_cmd" ] || return 1
+  _cmd=${_cmd%%:*}
+  echo "${_cmd%% *}"
 }
 
-# is_app_uid <pid>：uid>=10000（u0_a* 应用）时回显 uid，否则输出空
 is_app_uid() {
-  u=$(awk '/^Uid/{print $2;exit}' /proc/$1/status 2>/dev/null)
-  case "$u" in ''|*[!0-9]*) return;; esac
-  [ "$u" -ge 10000 ] && echo "$u"
+  [ -r "/proc/$1/status" ] || return 1
+  while IFS=': 	' read -r _k _v _; do
+    if [ "$_k" = "Uid" ]; then
+      case "$_v" in
+        ''|*[!0-9]*) return 1;;
+        *) [ "$_v" -ge 10000 ] && return 0 || return 1;;
+      esac
+    fi
+  done < "/proc/$1/status" 2>/dev/null
+  return 1
 }
 
-# nice_of <pid或tid>：/proc/<t>/stat 第 19 字段
 nice_of() {
-  # v1.13.16 B1: 零 fork 读 /proc/<pid>/stat 的 nice（原 awk 子进程在换页风暴下单次
-  # 可达 5-10ms，一次 renice 循环几十次即数百 ms）。字段布局：pid (comm) state ...，
-  # comm 可能含空格与括号 → 用最后一个 ") " 之后切分；去掉 pid+comm 后 nice 是第 17 个。
-  # v1.13.20: 同步设置 _nice_val 变量，允许内部调用者直接取值、免除 $(nice_of) 的子 shell fork。
-  _nice_val=""
-  [ -r "/proc/$1/stat" ] || { echo ""; return 1; }
-  IFS= read -r _ns < "/proc/$1/stat" 2>/dev/null || { echo ""; return 1; }
-  _nr=${_ns##*) }
-  [ -n "$_nr" ] || { echo ""; return 1; }
-  set -- $_nr
-  case "${17:-}" in ''|*[!0-9-]*) echo ""; return 1;; esac
-  _nice_val="${17}"
-  echo "${17}"
-  return 0
+  [ -r "/proc/$1/stat" ] || return 1
+  awk '{sub(/^[0-9]+ \(.*\) /,""); print $17}' "/proc/$1/stat" 2>/dev/null
 }
 
-# now_ms：毫秒时间戳（/proc/uptime 小数点后两位）
-now_ms() { awk '{printf "%d", $1*1000}' /proc/uptime 2>/dev/null; }
-
-# in_whitelist <pkg>：前缀匹配白名单
 in_whitelist() {
-  for w in $WHITELIST_PKGS; do
-    case "$1" in "$w"*) return 0;; esac
-  done
+  for _w in $WHITELIST_PKGS; do [ "$1" = "$_w" ] && return 0; done; return 1
+}
+
+apply_rogue_mitigation() {
+  _arm_pid=$1; _arm_pkg=$2
+  [ -n "$_arm_pid" ] && [ -d "/proc/$_arm_pid" ] || return 0
+  renice -n 10 -p "$_arm_pid" >/dev/null 2>&1
+  ionice -c 3 -p "$_arm_pid" >/dev/null 2>&1
+  logx W "act=rogue_ionice pid=$_arm_pid pkg=$_arm_pkg msg=后台极端占用_施加renice10与Idle_IO"
+}
+
+# v2.0.1 P0 修复：get_top_app_info 严格校验 Uid>=10000 与 oom_score_adj == 0，排除系统常驻绑定服务与Root子服务
+get_top_app_info() {
+  _top_file=""
+  if [ -r /dev/cpuset/top-app/cgroup.procs ]; then _top_file=/dev/cpuset/top-app/cgroup.procs
+  elif [ -r /dev/cpuctl/top-app/cgroup.procs ]; then _top_file=/dev/cpuctl/top-app/cgroup.procs
+  elif [ -r /dev/cpuset/top-app/tasks ]; then _top_file=/dev/cpuset/top-app/tasks; fi
+  [ -n "$_top_file" ] || return 1
+  _target_pid=""; _target_pkg=""
+  while IFS= read -r _tpid; do
+    case "$_tpid" in ''|*[!0-9]*) continue;; esac
+    [ -d "/proc/$_tpid" ] || continue
+    is_app_uid "$_tpid" || continue
+    _cmd_raw=""
+    IFS= read -r _cmd_raw < "/proc/$_tpid/cmdline" 2>/dev/null
+    [ -n "$_cmd_raw" ] || continue
+    _cmd_raw=${_cmd_raw%%:*}; _cmd_raw=${_cmd_raw%% *}
+    case "$_cmd_raw" in
+      system_server|*surfaceflinger*|/system/*|/vendor/*|/apex/*|android.hardware.*|com.android.systemui*|com.samsung.SMT|com.google.android.tts|com.samsung.android.honeyboard) continue ;;
+      *.*)
+        _adj=""
+        read -r _adj < "/proc/$_tpid/oom_score_adj" 2>/dev/null
+        if [ "$_adj" = "0" ]; then
+          _target_pid=$_tpid; _target_pkg=$_cmd_raw; break
+        fi
+        ;;
+    esac
+  done < "$_top_file"
+  if [ -n "$_target_pid" ] && [ -n "$_target_pkg" ]; then
+    echo "$_target_pid $_target_pkg"; return 0
+  fi
   return 1
 }
 
-# focused_pkg：当前前台焦点应用包名（读不到则输出空）
 focused_pkg() {
-  dumpsys window 2>/dev/null | grep -m1 'mCurrentFocus=Window{' | \
-    sed -n 's/.* u0 \([^ /}]*\).*/\1/p'
+  _tinfo=$(get_top_app_info 2>/dev/null)
+  if [ -n "$_tinfo" ]; then echo "${_tinfo#* }"; return 0; fi
+  dumpsys window 2>/dev/null | grep -m1 'mCurrentFocus=Window{' | sed -n 's/.* u0 \([^ /}]*\).*//p'
 }
 
-# v1.5.0: is_foreground_service <pid>：动态前台服务豁免判定（极速只读内核接口）
-# oom_score_adj <= 200 为 Android 前台服务/可感知服务（音乐后台、录音、蓝牙穿戴等）
 is_foreground_service() {
-  # v1.13.16 B1: 零 fork（原 cat 子进程；削峰循环里每 pid 一次）
-  adj=""
-  [ -r "/proc/$1/oom_score_adj" ] && IFS= read -r adj < "/proc/$1/oom_score_adj" 2>/dev/null
-  case "$adj" in ''|*[!0-9-]*) return 1;; esac
-  [ "$adj" -le 200 ] && return 0
-  return 1
+  [ -r "/proc/$1/oom_score_adj" ] || return 1
+  read -r _adj < "/proc/$1/oom_score_adj" 2>/dev/null
+  case "$_adj" in ''|*[!0-9-]*) return 1;; *) [ "$_adj" -le 200 ];; esac
 }
 
-# FR-11 v1.8.0: is_in_top_app_cgroup <pid>
-# 检查进程是否在 Android top-app cgroup（内核认为的最高优先级进程组）
-# 用于 cpu_guard 豁免：系统本身认为是 top-app 的进程做合法 CPU 密集工作时，不应被惩罚
-# 场景：微信截图后后台解码、钉钉消息处理、浏览器 JIT 等
-# v1.13.20: 零 fork 读 /proc/$1/cpuset（原 $(cat) 每次启动 2 个子进程，活跃循环触发几十次）
 is_in_top_app_cgroup() {
-  [ -r "/proc/$1/cpuset" ] || return 1
-  _it_cs=""
-  IFS= read -r _it_cs < "/proc/$1/cpuset" 2>/dev/null
-  case "$_it_cs" in /top-app*) return 0;; esac
-  return 1
+  [ -r "/proc/$1/cpuset" ] && read -r _cs < "/proc/$1/cpuset" 2>/dev/null && [ "$_cs" = "/top-app" ]
 }
 
-# v1.13.20: main_daemon_alive——零 fork 内建 read 判断主守护 memtonic.sh 是否存活
-# 彻底替代脆弱的 kill -0 "$PPID"（子守护被 child_heal 重拉或独立拉起时脱钩导致 PPID=1，
-# 会使 kill -0 1 永远为真致使子守护成为失控孤儿无法清场）。
 main_daemon_alive() {
-  [ -r "$PIDF" ] || return 1
-  _mda_entry=""
-  IFS= read -r _mda_entry < "$PIDF" 2>/dev/null
-  _mda_pid=${_mda_entry%%:*}
-  case "$_mda_pid" in ''|*[!0-9]*) return 1;; esac
-  [ -d "/proc/$_mda_pid" ] || return 1
-  return 0
+  _mp=$(cat "$PIDF" 2>/dev/null); _mp=${_mp%%:*}
+  case "$_mp" in ''|*[!0-9]*) return 1;; *) [ -d "/proc/$_mp" ] && grep -q memtonic "/proc/$_mp/cmdline" 2>/dev/null;; esac
 }
 
-# v1.13.19: dumpsys rollback 单次采集 + 60s 复用。
-# 背景：check_staged_rollback（1 次）与 check_rollback_disarm（3-4 次）各自 dump，
-# 每次 ~180ms binder，同一轮巡检重复采集同一份数据。落文件同时规避旧实现记录的
-# ARG_MAX 风险（输出曾 >140KB，经变量传参会 "Argument list too long"）。
-# 返回缓存文件路径；调用方取一次存变量，避免多次 fork。
-rollback_dump_get() {
-  _rd_now=$(date +%s)
-  _rd_mt=0
-  if [ -s "$RUN/rollback_dump.txt" ]; then
-    _rd_mt=$(stat -c %Y "$RUN/rollback_dump.txt" 2>/dev/null)
-    case "$_rd_mt" in ''|*[!0-9]*) _rd_mt=0;; esac
-  fi
-  if [ "$_rd_mt" -eq 0 ] || [ $((_rd_now - _rd_mt)) -gt 60 ]; then
-    dumpsys rollback > "$RUN/rollback_dump.txt" 2>/dev/null
-  fi
-  printf '%s' "$RUN/rollback_dump.txt"
-}
+rollback_dump_get() { dumpsys rollback 2>/dev/null; }
 
-# v1.5.0 Sentinel P0 / Fix-D v1.8.0: check_staged_rollback
-# 检测 Staged Rollback 挂起风险，6小时去重防日志刷屏
 check_staged_rollback() {
-  # Fix-D: 6 小时内只报一次，防止每小时重复写入相同告警污染日志
-  _now=$(date +%s)
-  _last=$(cat "$ROLLBACK_WARNED_TS" 2>/dev/null)
-  case "$_last" in ''|*[!0-9]*) _last=0;; esac
-  [ $((_now - _last)) -lt 21600 ] && return 0
-  _rbdf=$(rollback_dump_get)
-  rb_cnt=$(grep -c 'state: enabling' "$_rbdf" 2>/dev/null)
-  case "$rb_cnt" in ''|*[!0-9]*) rb_cnt=0;; esac
-  if [ "$rb_cnt" -gt 0 ]; then
-    logx W "warn=staged_rollback_active count=$rb_cnt note=do_not_reboot"
-    echo "$_now" > "$ROLLBACK_WARNED_TS" 2>/dev/null
+  _rb_cnt=$(dumpsys rollback 2>/dev/null | grep -c 'state: enabling')
+  case "$_rb_cnt" in ''|*[!0-9]*) _rb_cnt=0;; esac
+  if [ "$_rb_cnt" -gt 0 ]; then
+    logx W "warn=staged_rollback active_count=$_rb_cnt msg=检出待生效回滚会话_禁止软重启防丢Root"
+    echo "rollback_count=$_rb_cnt ts=$(date '+%m-%d %H:%M:%S')" > "$RUN/reboot_suppressed.flag" 2>/dev/null
+    notify_alert rollback "MemTonic: 检出 $_rb_cnt 条staged rollback——严禁重启,避免丢Root"
+  else
+    [ -f "$RUN/reboot_suppressed.flag" ] && rm -f "$RUN/reboot_suppressed.flag" 2>/dev/null
   fi
 }
 
-# v1.5.0 Sentinel P0: capture_incident <原因>：框架重启/异常事中 60s 黑匣子快照
 capture_incident() {
-  ts=$(date '+%Y%m%d_%H%M%S')
-  inc_file="$RUN/incident-${ts}_$$.log"
+  _ts=$(date '+%Y%m%d_%H%M%S')
+  _inc_file="$RUN/incident-${_ts}_$$.log"
   (
-    echo "=== INCIDENT SNAPSHOT: $ts reason=$1 ==="
-    echo "--- UPTIME ---"
-    uptime 2>/dev/null
-    echo "--- PSI ---"
-    cat /proc/pressure/cpu 2>/dev/null
-    cat /proc/pressure/memory 2>/dev/null
-    cat /proc/pressure/io 2>/dev/null
-    echo "--- ROLLBACK ACTIVE ---"
-    dumpsys rollback 2>/dev/null | grep -E '(enabling|committed)'
-    echo "--- TOP 20 ---"
-    top -b -n 1 -m 20 2>/dev/null
-    echo "--- DMESG TAIL ---"
-    dmesg 2>/dev/null | tail -n 200
-    echo "--- MEMTONIC LOG TAIL (64KB，v1.13.0 取证补强：主日志会被风暴期流量挤出截断面) ---"
-    tail -c 65536 "$LOG" 2>/dev/null
-  ) > "$inc_file" 2>&1 &
-  logx E "event=incident_snapshot path=$inc_file reason=$1"
+    echo "=== INCIDENT SNAPSHOT: $_ts reason=$1 ==="
+    echo "--- UPTIME ---" && uptime 2>/dev/null
+    echo "--- PSI ---" && cat /proc/pressure/cpu /proc/pressure/memory /proc/pressure/io 2>/dev/null
+    echo "--- ROLLBACK ACTIVE ---" && dumpsys rollback 2>/dev/null | grep -E '(enabling|committed)'
+    echo "--- TOP 20 ---" && top -b -n 1 -m 20 2>/dev/null
+    echo "--- MEMTONIC LOG TAIL ---" && tail -c 65536 "$LOG" 2>/dev/null
+  ) > "$_inc_file" 2>&1 &
+  logx E "event=incident_snapshot path=$_inc_file reason=$1"
 }
 
-# v1.5.0 Sentinel P0: check_root_liveness：KernelSU 会话存活自检
 check_root_liveness() {
-  if ! grep -q 'kernelsu' /proc/modules 2>/dev/null; then
-    logx E "event=root_lost_exit reason=kernelsu_unloaded"
-    rm -f "$PIDF" "$GUARD_PIDF" 2>/dev/null
-    exit 0
+  if [ "$(id -u 2>/dev/null)" != "0" ]; then
+    logx E "event=root_lost_exit msg=Root会话失效_安全清场退出"
+    restore_all_on_exit; exit 0
   fi
 }
 
-# renice_tree <pid> <目标nice> <pkg> <仅限nice0:0|1>
-# 遍历进程全部线程，逐 tid 设置并记录还原清单。
 renice_tree() {
-  pid=$1; tn=$2; pkg=$3; only0=$4
-  for t in /proc/$pid/task/*; do
-    tid=${t##*/}
-    on=$(nice_of "$tid")
-    case "$on" in ''|*[!0-9-]*) continue;; esac
-    [ "$on" = "$tn" ] && continue
-    [ "$on" -lt "$tn" ] && continue
-    [ "$only0" = "1" ] && [ "$on" != "0" ] && continue
-    if renice -n $((tn - on)) -p "$tid" >/dev/null 2>&1; then
-      # 去重：同一 tid 在同一风暴窗口内只记录一次（防护栏多轮扫描重复写入）
-      grep -q "^$tid " "$RLST" 2>/dev/null || echo "$tid $on $tn $pkg" >> "$RLST" 2>/dev/null
-      reniced_tid=$((reniced_tid + 1))
+  _rp=$1; _rn=$2; _rpkg=$3; _rec=$4
+  [ -d "/proc/$_rp/task" ] || return 0
+  for _t in /proc/$_rp/task/*; do
+    _tid=${_t##*/}; case "$_tid" in ''|*[!0-9]*) continue;; esac
+    _orig=$(nice_of "$_tid"); case "$_orig" in ''|*[!0-9-]*) continue;; esac
+    [ "$_orig" -lt 0 ] && [ "$_rn" -gt 0 ] && continue
+    [ "$_orig" = "$_rn" ] && continue
+    if renice -n $((_rn - _orig)) -p "$_tid" >/dev/null 2>&1; then
+      [ "$_rec" = "1" ] && echo "$_tid $_orig $_rn $_rpkg" >> "$RLST" 2>/dev/null
     fi
   done
 }
 
-# storm_restore_pending <原因标签>：还原清单里所有 tid 到原 nice
-# v1.5.0 性能重构：同目标 nice 分组批量聚合，通过 toybox renice -p 批量传参
-# 还原耗时从 185s 骤降至 <2s（提速 98%），100% 保持防互殴与跳过机制
 storm_restore_pending() {
   [ -s "$RLST" ] || return 0
-  cp "$RLST" "$RUN/renice_detail_last.log" 2>/dev/null
-  ok=0; skip=0; fail=0; chg=0
-  batch_tids=""
-  batch_cnt=0
-
-  while read -r tid on ap pkg; do
-    case "$tid" in ''|*[!0-9]*) continue;; esac
-    if [ ! -d /proc/$tid ]; then
-      skip=$((skip+1)); continue
-    fi
-    case "$ap" in ''|*[!0-9-]*) continue;; esac
-    r_cur=$(nice_of "$tid")
-    if [ "$r_cur" != "$ap" ]; then
-      chg=$((chg+1))
-      logx W "err=restore_skipped_changed tid=$tid pkg=$pkg ours=$ap now=$r_cur"
-      continue
-    fi
-
-    # 特殊目标优先单处（如 Launcher 被设为 -4，而非标准削峰的 5）
-    if [ "$ap" != "$STORM_NICE_APP" ]; then
-      if renice -n $((on - ap)) -p "$tid" >/dev/null 2>&1; then
-        ok=$((ok+1))
-      else
-        fail=$((fail+1))
-        logx X "err=restore_failed tid=$tid pkg=$pkg nice=$on"
-      fi
-      continue
-    fi
-
-    # 绝大部分为原 nice 0，聚合成批次传参
-    batch_tids="$batch_tids -p $tid"
-    batch_cnt=$((batch_cnt+1))
-    ok=$((ok+1))
-
-    if [ "$batch_cnt" -ge 50 ]; then
-      # shellcheck disable=SC2086
-      renice -n -5 $batch_tids >/dev/null 2>&1
-      batch_tids=""
-      batch_cnt=0
-    fi
+  _restored=0
+  while read -r _rtid _rorig _rcur _rpkg; do
+    case "$_rtid" in ''|*[!0-9]*) continue;; esac
+    [ -d "/proc/$_rtid" ] || continue
+    _c=$(nice_of "$_rtid"); case "$_c" in ''|*[!0-9-]*) continue;; esac
+    [ "$_c" = "$_rorig" ] && continue
+    renice -n $((_rorig - _c)) -p "$_rtid" >/dev/null 2>&1 && _restored=$((_restored+1))
   done < "$RLST"
-
-  if [ "$batch_cnt" -gt 0 ]; then
-    # shellcheck disable=SC2086
-    renice -n -5 $batch_tids >/dev/null 2>&1
-  fi
-
   rm -f "$RLST" 2>/dev/null
-  logx A "act=restore reason=$1 ok=$ok skipped_exit=$skip changed_3rd_party=$chg failed=$fail unit=tid batch=yes"
+  [ "$_restored" -gt 0 ] && logx A "act=storm_restore ctx=$1 count=$_restored msg=风暴期降权线程已批量还原"
 }
 
-# storm_window <触发原因>：护栏窗口主体（在护栏子进程内运行）
 storm_window() {
-  reason=$1
-  t0=$(date +%s)
-  logx E "event=storm_start reason=$reason sspid=$(pidof system_server)"
-
+  _reason=$1; _t0=$(date +%s)
+  logx E "event=storm_start reason=$_reason sspid=$(pidof system_server 2>/dev/null)"
   mkdir "$STORM_FLAG" 2>/dev/null
   : > "$RLST" 2>/dev/null
-  end=$((t0 + STORM_WINDOW))
-  n_app=0; n_launcher=0
-  reniced_tid=0
-  done_pids=" "
-  for d in /proc/[0-9]*; do done_pids="$done_pids${d##*/} "; done
-  psi_low=0
-  while [ "$(date +%s)" -lt "$end" ]; do
+  _end=$((_t0 + STORM_WINDOW)); _n_app=0; _n_launcher=0; _done_pids=" "; _psi_low=0
+  while [ "$(date +%s)" -lt "$_end" ]; do
     sleep $STORM_SCAN
+    _p=$(psi_val cpu some); _p=${_p%%.*}
+    case "$_p" in ''|*[!0-9]*) _p=99;; esac
+    if [ "$_p" -lt "$STORM_EXIT_PSI" ]; then _psi_low=$((_psi_low+1)); else _psi_low=0; fi
+    [ "$_psi_low" -ge 3 ] && break
 
-    p=$(psi_val cpu some)
-    p=${p%%.*}
-    case "$p" in ''|*[!0-9]*) p=99;; esac
-    if [ "$p" -lt "$STORM_EXIT_PSI" ]; then
-      psi_low=$((psi_low+1))
-    else
-      psi_low=0
-    fi
-
-    # v1.5.0: 连续 3 次低于阈值且增加 20s 冷却确认防二次反弹
-    if [ "$psi_low" -ge 3 ]; then
-      logx S "act=psi_cooling_start wait=20s"
-      sleep 20
-      p_recheck=$(psi_val cpu some)
-      p_recheck=${p_recheck%%.*}
-      case "$p_recheck" in ''|*[!0-9]*) p_recheck=99;; esac
-      if [ "$p_recheck" -lt "$STORM_EXIT_PSI" ]; then
-        break
+    _focus=$(focused_pkg)
+    for _d in /proc/[0-9]*; do
+      _pid=${_d##*/}; case "$_done_pids" in *" $_pid "*) continue;; esac
+      is_app_uid "$_pid" >/dev/null || { _done_pids="$_done_pids$_pid "; continue; }
+      _pkg=$(pkg_of "$_pid"); case "$_pkg" in ''|*" "*) _done_pids="$_done_pids$_pid "; continue;; esac
+      if [ "$_pkg" = "$LAUNCHER_PKG" ]; then
+        renice_tree "$_pid" "$LAUNCHER_NICE" "$_pkg" 0
+        _n_launcher=$((_n_launcher+1)); _done_pids="$_done_pids$_pid "; continue
       fi
-      psi_low=0
-    fi
-
-    focus=$(focused_pkg)
-    t_scan0=$(now_ms)
-    for d in /proc/[0-9]*; do
-      pid=${d##*/}
-      case "$done_pids" in *" $pid "*) continue;; esac
-      u=$(is_app_uid "$pid")
-      [ -n "$u" ] || { done_pids="$done_pids$pid "; continue; }
-      pkg=$(pkg_of "$pid")
-      case "$pkg" in ''|*" "*) done_pids="$done_pids$pid "; continue;; esac
-      if [ "$pkg" = "$LAUNCHER_PKG" ]; then
-        renice_tree "$pid" "$LAUNCHER_NICE" "$pkg" 0
-        n_launcher=$((n_launcher+1))
-        logx A "act=launcher_boost pid=$pid pkg=$pkg nice=0→$LAUNCHER_NICE"
-        done_pids="$done_pids$pid "; continue
+      if in_whitelist "$_pkg" || is_frozen_pid "$_pid" || is_foreground_service "$_pid"; then
+        _done_pids="$_done_pids$_pid "; continue
       fi
-      if in_whitelist "$pkg"; then
-        logx S "act=whitelist_skip pid=$pid pkg=$pkg"
-        done_pids="$done_pids$pid "; continue
-      fi
-      # v1.13.19: 跳过已被 cgroup freezer 冻结的进程（NoActive 等）。对冻结任务改 nice
-      # 既无收益（调度器不选它），解冻瞬间还要重新排队；wchan 判定零 fork。
-      if is_frozen_pid "$pid"; then
-        logx S "act=frozen_skip pid=$pid pkg=$pkg"
-        done_pids="$done_pids$pid "; continue
-      fi
-      # v1.13.13 (11-06 ASR 取证): RayNeo 眼镜语音链路豁免「整进程」削峰。
-      # renice_tree 会把音频采集 / ASR / 网络回调线程一并压到 +5，实测
-      # deprioritize_rayneo=1；只豁免启动风暴削峰这一处，不动全局白名单
-      # （in_whitelist 还被 cpu_guard FR-4 毒瘤降权与 memtonic optimize 共用）。
-      case "$pkg" in
-        com.rayneo.venus.pub*)
-          logx S "act=voice_asr_skip pid=$pid pkg=$pkg msg=眼镜语音链路豁免整进程削峰"
-          done_pids="$done_pids$pid "; continue;;
-      esac
-      # v1.5.0: 动态前台服务豁免（oom_score_adj <= 200 免削峰）
-      if is_foreground_service "$pid"; then
-        logx S "act=fg_service_skip pid=$pid pkg=$pkg"
-        done_pids="$done_pids$pid "; continue
-      fi
-      [ "$pkg" = "$focus" ] && { done_pids="$done_pids$pid "; continue; }
-      [ "$(nice_of "$pid")" = "0" ] || { done_pids="$done_pids$pid "; continue; }
-      # v1.9.7: 削峰总量上限——软重启风暴窗口内大量应用正在冷启动，
-      # 实测曾对 95 个应用（含 permissioncontroller/chrome/mediasearch 等开机关键应用）
-      # 集体 nice+5，反而拉长启动尾延迟。达到上限后仅记录不干预。
-      if [ "$n_app" -ge "$STORM_MAX_APP" ]; then
-        logx S "act=deprioritize_capped pkg=$pkg msg=已达窗口削峰上限${STORM_MAX_APP}_跳过"
-        done_pids="$done_pids$pid "; continue
-      fi
-      renice_tree "$pid" "$STORM_NICE_APP" "$pkg" 1
-      n_app=$((n_app+1))
-      logx A "act=deprioritize pid=$pid pkg=$pkg nice=0→$STORM_NICE_APP"
-      done_pids="$done_pids$pid "
+      [ "$_pkg" = "$_focus" ] && { _done_pids="$_done_pids$_pid "; continue; }
+      [ "$(nice_of "$_pid")" = "0" ] || { _done_pids="$_done_pids$_pid "; continue; }
+      [ "$_n_app" -ge "$STORM_MAX_APP" ] && { _done_pids="$_done_pids$_pid "; continue; }
+      renice_tree "$_pid" "$STORM_NICE_APP" "$_pkg" 1
+      _n_app=$((_n_app+1)); _done_pids="$_done_pids$_pid "
     done
-    last_scan_ms=$(( $(now_ms) - t_scan0 ))
-    snapshot
   done
-  rs0=$(now_ms)
   storm_restore_pending storm_end
-  restore_ms=$(( $(now_ms) - rs0 ))
   rm -rf "$STORM_FLAG" 2>/dev/null
-  logx E "event=storm_end reason=$reason duration=$(( $(date +%s) - t0 )) app_renice=$n_app launcher_boost=$n_launcher reniced_tid=$reniced_tid psi_exit=$([ "$psi_low" -ge 3 ] && echo yes || echo no) scan_ms=${last_scan_ms:-NA} restore_ms=${restore_ms:-NA}"
+  logx E "event=storm_end reason=$_reason duration=$(( $(date +%s) - _t0 )) app_renice=$_n_app launcher_boost=$_n_launcher"
 }
 
-# isolate_kswapd 已于 v1.9.0 废除（实测48次全被内核 Power HAL 打回，且副作用引发 Direct Reclaim 激增）
-# kswapd 亲和性完全交由内核原生管理，模块不再干预。
-# restore_kswapd 亦同步废除，无需还原任何掩码。
-
-
-
-# camera_vip_on: 相机激活时提权 cameraserver 与 HAL provider（严格遵守增量语义）
-# 设计约束：
-#   1. 通过 cmdline 匹配 provider PID，避免 comm 截断问题；
-#   2. 备份各进程原始 nice 到 $CAMERA_VIP_BAK，用于退出时精确还原；
-#   3. GEMINI.md 铁律：若进程已享有高于 -10 的优先级，跳过（严禁反向降级）。
-# v1.9.10: 记录每个目标的 renice 结果（实测 cameraserver nice=0 → renice 后仍=0，
-#   疑被 Android SchedulingPolicy 服务拉回；记录 actual_nice 供审计判定是否生效）。
-# v1.12.0: find_camera_provider —— provider 定位抽为独立函数（camera_vip_on 与核亲和共用）
-# 两段式：先精确匹配三星硬件 ISP provider，再兜底任意 camera.provider。
-# 输出 provider pid（找不到输出空串）。
-# v1.13.2 耗电治理（10-27 剖析）：原实现每次调用全盘 /proc 扫描（~900 进程 ×
-#   strings+head ≈ 2.2s CPU），被 FR-C3 每 20s 探测调用 = 均摊 ~560ms/tick ≈ 11% 单核，
-#   是 fluency 耗电最大单项。改为缓存化：命中且 /proc/<pid> 存活且 cmdline 校验通过
-#   且 TTL<300s → 直接返回（~2ms）；否则走原全盘扫描并回写缓存。provider 重启由
-#   存活检查/cmdline 校验兜底，最多滞后一个探测周期。
-find_camera_provider() {
-  _fcp_now=$(date +%s)
-  _fcp_cached=$(cat "$RUN/camera_provider.pid" 2>/dev/null)
-  case "$_fcp_cached" in ''|*[!0-9]*) _fcp_cached="";; esac
-  if [ -n "$_fcp_cached" ] && [ -d "/proc/$_fcp_cached" ]; then
-    if strings "/proc/$_fcp_cached/cmdline" 2>/dev/null | head -n 1 | grep -q 'camera.provider'; then
-      _fcp_ts=$(cat "$RUN/camera_provider.ts" 2>/dev/null); case "$_fcp_ts" in ''|*[!0-9]*) _fcp_ts=0;; esac
-      [ $((_fcp_now - _fcp_ts)) -lt 300 ] && { echo "$_fcp_cached"; return 0; }
-    fi
-  fi
-  _fcp_pid=""
-  for d in /proc/[0-9]*; do
-    cmd=$(strings "$d/cmdline" 2>/dev/null | head -n 1)
-    case "$cmd" in *samsung.hardware.camera.provider*|*samsung*camera-provider*)
-      _fcp_pid=${d##*/}; break;; esac
-  done
-  if [ -z "$_fcp_pid" ]; then
-    for d in /proc/[0-9]*; do
-      cmd=$(strings "$d/cmdline" 2>/dev/null | head -n 1)
-      case "$cmd" in *camera.provider*|*camera-provider*)
-        _fcp_pid=${d##*/}; break;; esac
-    done
-  fi
-  if [ -n "$_fcp_pid" ]; then
-    echo "$_fcp_pid" > "$RUN/camera_provider.pid" 2>/dev/null
-    echo "$_fcp_now" > "$RUN/camera_provider.ts" 2>/dev/null
-  fi
-  echo "$_fcp_pid"
+camera_guard_restore() {
+  _cgp=$(pidof vendor.samsung.hardware.camera.provider-service_64 2>/dev/null); _cgp=${_cgp%% *}
+  [ -n "$_cgp" ] && ionice -c 2 -n 4 -p "$_cgp" 2>/dev/null
+  rm -f "$CAMERA_ACTIVE_FLAG" "$CAMERA_VIP_BAK" "$CAMERA_AFF_BAK" 2>/dev/null
+  logx A "act=camera_guard_off pid=${_cgp:-NA} msg=全域相机退出_provider还原至prio4"
 }
 
-# v1.12.5: FR-BT2 —— 低成本蓝牙 LE/GATT 健康哨兵
-# 触发语义：com.rayneo.venus.pub 应用存活（有 LE/GATT 通道调用方）+ PSI some avg10 >= 5%
-#   → BT 栈/HAL/audioserver 逐线程提权 -8；PSI 回落<3% continuous 2 tick 后还原 +30s cooldown。
-# 证据：10-17 22:47+ RayNeo GATT direct connect 反复 30s HCI_ERR_HOST_TIMEOUT，
-#   此时主 FR-BT 条件不满足（A2DP idle、BT 栈 CPU<3%、PSI CPU 16-25%）。FR-BT2 覆盖这个盲区。
-bt2_state=0
-bt2_miss=0
-bt2_cooldown_until=0
-bt2_gatt_win=0
-bt2_hit=0                 # v1.12.9: 防抖入计数（psi≥5% 连续 2 tick 才允许触发）
-
-bt2_should_boost() {
-  if [ "$(date +%s)" -lt "$bt2_cooldown_until" ]; then return 1; fi
-  [ -n "$(pidof com.rayneo.venus.pub 2>/dev/null)" ] || { bt2_hit=0; return 1; }
-  [ "$bt2_gatt_win" -ge 2 ] && return 0
-  bt2_psi=$(psi_val memory some)
-  bt2_step=${bt2_psi%%.*}
-  case "$bt2_step" in ''|*[!0-9]*) bt2_hit=0; return 1;; esac
-  # v1.12.9: 防抖入——psi≥5% 需连续 2 tick（10s）确认。10-22 15:33-15:47 OOM 取证：
-  # psi 在 0.5-16% 高频抖动时单 tick 触发导致 14 分钟 5 次起落（每次 108 线程 renice），
-  # 是 GC 饿死连锁的帮凶之一。
-  if [ "$bt2_step" -ge 5 ]; then
-    bt2_hit=$((bt2_hit + 1))
-    [ "$bt2_hit" -ge 2 ] && return 0
-    return 1
-  fi
-  bt2_hit=0
-  return 1
+ss_get_pss_kb() {
+  [ -r "/proc/$1/smaps" ] || return 1
+  awk '
+    /^[0-9a-f]+-[0-9a-f]+ / { in_j = ($0 ~ /\[anon:dalvik-(main space|.*large object space|non moving space|zygote space)\]/) }
+    in_j && /^Pss:/ { p += $2 }
+    in_j && /^SwapPss:/ { s += $2 }
+    END { print p + s + 0 }
+  ' "/proc/$1/smaps" 2>/dev/null
 }
 
-bt2_probe_rayneo() {
-  _btpc=$(logcat -d -v brief -t 100 2>/dev/null | grep -c 'RayneoForegroundService')
-  case "$_btpc" in ''|*[!0-9]*) _btpc=0;; esac
-  bt2_gatt_win=$_btpc
-}
-
-# v1.12.8: FR-BT3 —— RayNeo BR/EDR 主动断连后的 LE 重连护航窗口
-# 真机证据（10-20 08:32/08:39/08:57）：RayNeo iO 以 reason=19 主动断开 BR/EDR，
-# 随后 com.rayneo.venus.pub 在 3-5 秒内用 LE 直连回连。此窗口是断联风险最高点。
-# v1.13.0: 窗口 160 → 3000 行。致盲机制（10-23 雷鸟断连取证）：ClashMeta DNS 风暴下
-#   main buffer ~90s/4000 行，160 行 ≈ 1-2s 历史 < 5s 采样周期——断连广播在两次采样
-#   之间老化出局，检测必然漏。3000 行 ≈ 60s+ 覆盖采样间隙；同一广播可能被相邻两次
-#   采样重复命中 → 调用方以 bt3_cooldown_until(90s) 防同一条日志重复触发。
-#   方案裁决：dumpsys 状态差分被否决——断连后 3-5s 即重连，30s 采样来不及护航、
-#   5s 采样则 dumpsys 成本不可接受；放大 logcat 窗口零成本闭合盲区。
-bt3_disconnect_seen() {
-  _b3a=$(logcat -d -v time -t 3000 2>/dev/null | \
-    grep -A2 'action: android.bluetooth.device.action.ACL_DISCONNECTED' | \
-    grep -m1 'Alias(RayNeo')
-  [ -n "$_b3a" ]
-}
-
-find_face_service_pid() {
-  pidof vendor.samsung.hardware.biometrics.face-service 2>/dev/null
-}
-
-# v1.12.6: system_server 堆压快照（内存 OOM 软重启的前哨）
-# 用法：ss_heap_probe <触发日志标签>
-# 江湖规则：只在 Java Heap 接近阈值时落盘；本函数会调用 dumpsys，因此由
-# ss_health_probe 在廉价 /proc/status 门控命中后调用，不能每轮裸跑。
-# v1.12.9 探测经济性：单次 dumpsys 落临时文件，判定与快照共用同一份。旧实现在
-# 阈值命中后二次 dumpsys——dumpsys meminfo 本身强迫 system_server 重分配，在
-# 高水位上执行等于火上浇油（10-22 15:47 OOM 取证定性为共犯）。
-# 每次探测都将最新 Java Heap 写入 SS_HEAP_KB_FILE（供 FR-SS 水位判定与卡片描述）。
 ss_heap_probe() {
-  _trig=$1
-  [ -n "$_trig" ] || _trig=manual
+  _trig=${1:-manual}
   _ss=$(pidof system_server 2>/dev/null); _ss=${_ss%% *}
   [ -n "$_ss" ] || return 0
-  _tmpf="$RUN/.ssheap_probe.tmp"
-  dumpsys meminfo system_server > "$_tmpf" 2>/dev/null || { rm -f "$_tmpf"; return 0; }
-  _java_heap=$(awk '/Java Heap:/{for(i=1;i<=NF;i++)if($i~/^[0-9]+$/){print $i;exit}}' "$_tmpf")
-  case "$_java_heap" in ''|*[!0-9]*) rm -f "$_tmpf"; return 0;; esac
+  _java_heap=$(ss_get_pss_kb "$_ss")
+  case "$_java_heap" in ''|*[!0-9]*|0) return 0;; esac
   echo "$_java_heap" > "$SS_HEAP_KB_FILE" 2>/dev/null
-  # v1.13.14: 堆采样历史（趋势判定，保留最近 6 点；零 fork 追加）
   echo "$_java_heap" >> "$SS_HEAP_HIST" 2>/dev/null
   tail -n 6 "$SS_HEAP_HIST" > "$SS_HEAP_HIST.t" 2>/dev/null && mv "$SS_HEAP_HIST.t" "$SS_HEAP_HIST" 2>/dev/null
+
   if [ "$_java_heap" -ge "$SS_HEAP_WARN_KB" ]; then
-    # v1.13.15 A-3: 快照限流——非危机态每小时最多 1 个，危机态不受限
     _snap_ok=1
     if [ "$_java_heap" -lt "$SS_SNAP_CRISIS_KB" ]; then
-      _snow=$(date +%s)
-      _st=0
+      _snow=$(date +%s); _st=0
       [ -r "$SS_SNAP_TS" ] && IFS= read -r _st < "$SS_SNAP_TS" 2>/dev/null
       case "$_st" in ''|*[!0-9]*) _st=0;; esac
       [ $((_snow - _st)) -ge "$SS_SNAP_COOL" ] || _snap_ok=0
     fi
     if [ "$_snap_ok" = "1" ]; then
       _ssbb="$RUN/ssheap-$(date '+%Y%m%d_%H%M%S').log"
-      { echo "# MemTonic ssheap _trigger=$_trig _ts=$(date '+%m-%d %H:%M:%S')"; head -n 120 "$_tmpf"; } > "$_ssbb"
+      { echo "# MemTonic ssheap _trigger=$_trig _ts=$(date '+%m-%d %H:%M:%S') pss_kb=$_java_heap";
+        [ -r "/proc/$_ss/status" ] && head -n 35 "/proc/$_ss/status"; } > "$_ssbb" 2>/dev/null
       date +%s > "$SS_SNAP_TS" 2>/dev/null
-      logx A "act=ss_heap_probe trigger=$_trig java_heap_kb=$_java_heap path=$(basename "$_ssbb")"
-      # 每天最多清理一次 7 天前快照（危机现场 7 天内必留）
-      _cl=0
-      [ -r "$SS_SNAP_CLEAN_TS" ] && IFS= read -r _cl < "$SS_SNAP_CLEAN_TS" 2>/dev/null
+      logx A "act=ss_heap_probe trigger=$_trig ss_pss_kb=$_java_heap path=$(basename "$_ssbb")"
+      _cl=0; [ -r "$SS_SNAP_CLEAN_TS" ] && IFS= read -r _cl < "$SS_SNAP_CLEAN_TS" 2>/dev/null
       case "$_cl" in ''|*[!0-9]*) _cl=0;; esac
       if [ $(( $(date +%s) - _cl )) -ge 86400 ]; then
         find "$RUN" -maxdepth 1 -name 'ssheap-*.log' -mtime +7 -delete 2>/dev/null
         date +%s > "$SS_SNAP_CLEAN_TS" 2>/dev/null
         logx S "act=ss_snap_cleanup msg=已清理7天前堆快照"
       fi
-    else
-      _sn=$(( ${_sn:-0} + 1 ))
-      [ $((_sn % 20)) -eq 1 ] && logx S "act=ss_snap_skip java_heap_kb=$_java_heap msg=非危机态限流每小时1个"
     fi
-  fi
-  rm -f "$_tmpf"
-  return 0
-}
-
-# v1.12.6: system_server 健康门控。每轮只读 /proc/<pid>/status；超过 RSS/线程/Swap
-# 阈值时再调 ss_heap_probe 落盘。日志按 SS_HEALTH_COOL 秒去重，避免刷屏。
-# v1.12.9: ① 定期兜底探测 SS_PROBE_EVERY——堆爬升未必伴随 RSS/线程越限
-#   （10-22 事故盲区：15:33-15:47 堆 +52MB 但 RSS 门控未再命中）；② FR-SS 双水位泄压：
-#   ≥SS_TRIM_KB 请求 trim（am send-trim-memory RUNNING_CRITICAL，实测可用但效果有限，
-#   泄压主力是哨兵防抖降载）；≥SS_ALERT_KB 加黑匣子级告警。trim 按 SS_TRIM_COOL 限频。
-SS_HEALTH_RSS_KB=700000
-SS_HEALTH_SWAP_KB=200000
-SS_HEALTH_THREADS=600
-SS_HEALTH_COOL=900
-SS_HEAP_WARN_KB=400000
-SS_HEALTH_STATE=$RUN/ss_health.ts
-SS_PROBE_EVERY=1800
-SS_PROBE_EVERY_NIGHT=600      # v1.13.0: 深夜(00-06 CST)兜底探测间隔——两次 OOM 堆爬升尾段均 <6min
-SS_PROBE_EVERY_EXTREME=60     # v1.13.14: 抑制态(有 staged rollback 不能重启)极限压制探测间隔
-SS_PROBE_TS=$RUN/ss_probe.ts
-# v1.13.14 阈值前移（11-07 第四起 HeapFull 501MB 取证）：
-#   旧链 460 trim / 480 GC / 485 告警 三线全部被突破，且 am 在堆濒死时必然不可达
-#   （当日 ss_heap_trim 全天 0 次成功、relief 22 次全 fail）。前移 10-15MB 换取
-#   30-60 分钟有效窗口；同时新增内核路径兜底 ss_drop_caches（不经过 system_server）。
-SS_PREP_KB=440320             # 430MB 预备态：加密探测 + 趋势观察，不动手
-SS_TRIM_KB=460800             # 450MB 完整泄压链（原 460MB）
-SS_GC_KB=471040               # 460MB GC 加速（原 480MB）
-SS_GC_RELEASE_KB=450560       # 440MB GC 解除（原 450MB）
-SS_ALERT_KB=481280            # 470MB 告警（原 485MB）
-SS_EXTREME_KB=491520          # 480MB 极限压制：全手段叠加 + 每轮强制链
-SS_OOM_KB=507904              # 496MB OOM 参考线（仅日志口径）
-SS_TRIM_COOL=600
-SS_TRIM_RECHECK=300           # v1.13.0: trim 后强制复测间隔
-SS_TRIM_RETRY=30              # v1.13.14: 120→30，缩短复测间隔以抓 framework 短暂可用窗口
-SS_TRIM_TRIES=3               # v1.13.14: am 单轮最多尝试次数（立即 / +4s / +8s）
-SS_TRIM_TRY_GAP=4             # v1.13.14: 每次尝试间隔秒数（总阻塞 ≤8s）
-SS_TRIM_ATTEMPT_MIN=120       # v1.13.14: force 路径最小尝试间隔（防极限压制每轮阻塞）
-SS_HEAP_KB_FILE=$RUN/ss_heap.kb
-SS_HEAP_HIST=$RUN/ss_heap.hist # v1.13.14: 堆采样历史（趋势判定，保留最近 6 点）
-SS_TRIM_TS=$RUN/ss_trim.ts
-SS_DC_TS=$RUN/drop_caches.ts   # v1.13.14: drop_caches 冷却戳
-SS_DC_HIST=$RUN/drop_caches.hist # v1.13.14: drop_caches 1h 计数历史
-SS_DC_COOL=600                # 10 分钟最多 1 次
-SS_DC_HOUR_MAX=6              # 1 小时最多 6 次
-# v1.13.15 A-1: 堆探测条件化——dumpsys meminfo 是唯一的 9s 级尖峰源
-# （近 37h 日志里 14 次 >1000ms 的扫描尖峰全部紧邻 probe，最高 9220ms）。
-# 定期到点但内存无显著变化时跳过，把 98 次/天 降到 10–20 次。
-SS_PROBE_SKIP_KB=30720        # RSS 变化阈值 30MB
-SS_LAST_RSS=$RUN/ss_probe_rss.kb
-SS_RSS_TICK=$RUN/ss_probe_rss_tick.kb   # v1.13.16 B5: 上一 tick 的 RSS（短时斜率）
-SS_RSS_RISE_KB=10240          # v1.13.16 B5: 单 tick（~60s）涨 10MB 即视为值得探测
-# v1.13.15 A-3: 堆快照限流——实测 275 个/天（设计 144），628 个 inode。
-# 非危机态每小时最多 1 个；危机态（≥470MB）不受限，保证 OOM 现场不丢；自动清 7 天前。
-SS_SNAP_COOL=3600
-SS_SNAP_CRISIS_KB=481280      # 470MB
-SS_SNAP_TS=$RUN/ssheap_snap.ts
-SS_SNAP_CLEAN_TS=$RUN/ssheap_clean.ts
-SS_ADVICE_FLAG=$RUN/soft_reboot_advised.flag  # v1.13.0: trim 两次无效→WebUI 建议横幅标记
-# v1.13.0: FR-SS 升级链状态（cpu_guard 进程内存态；重启后自然复位，无跨会话语义）
-SS_TRIM_PRE_KB=0
-SS_TRIM_FAILS=0
-SS_RECHECK_DUE=0
-gc_state=0                 # v1.13.8: GC 危机加速状态（0=未介入 1=提权中；仅 cpu_guard 进程作用域）
-
-# v1.13.8: gc_boost_on —— 堆危机时 ART GC 守护线程提权至 -10（前置干预：直接攻击
-# 三次 OOM 的共同机制「CPU 饱和饿死 GC」——GC 抢到 CPU 才收得回内存）。
-# 触发：堆 ≥480MB 或泄压失败≥2（ss_health_probe 前置判定）；解除：堆 <450MB。
-# 线程识别：/proc/<pid>/task/*/comm 前缀匹配（comm 15 字符截断容忍：HeapTaskDaemon
-# 完整 14 字符、ReferenceQueueDa/FinalizerDaemon 截断形态均在模式内）。
-# GEMINI 铁律：已 ≤-10 跳过（严禁反向降级）；差分记录 gc_boost.bak；还原 delta 法。
-gc_boost_on() {
-  _gss=$(pidof system_server 2>/dev/null); _gss=${_gss%% *}
-  [ -n "$_gss" ] || return 0
-  : > "$RUN/gc_boost.bak" 2>/dev/null
-  _gb_n=0; _gb_task=0
-  for t in /proc/$_gss/task/*; do
-    # v1.13.14: 零 fork comm 读取（原 cat 子进程在换页风暴下成本暴涨，同 P2-A 范式）
-    IFS= read -r _gc_comm < "$t/comm" 2>/dev/null || continue
-    case "$_gc_comm" in
-      HeapTaskDaemon*|ReferenceQueue*|Finalizer*)
-        tid=${t##*/}
-        on=$(nice_of "$tid")
-        case "$on" in ''|*[!0-9-]*) continue;; esac
-        [ "$on" -le -15 ] && continue
-        renice -n $((-15 - on)) -p "$tid" >/dev/null 2>&1 || continue
-        # v1.13.14: 尝试绑大核（SM-S9180 cpu5-7 = mask 0xe0）；失败静默降级为仅提权
-        taskset -p e0 "$tid" >/dev/null 2>&1 && _gb_task=$((_gb_task+1))
-        echo "$tid $on" >> "$RUN/gc_boost.bak" 2>/dev/null
-        _gb_n=$((_gb_n+1))
-        ;;
-    esac
-  done
-  logx A "act=gc_boost_on threads=$_gb_n nice=-15 taskset=$_gb_task msg=堆危机_GC守护线程提权加绑大核_加速回收"
-  notify_alert gcboost "MemTonic: 堆危机——GC加速已介入（GC线程提权至 -15），持续至堆回落"
-  return 0
-}
-gc_boost_off() {
-  [ -s "$RUN/gc_boost.bak" ] || return 0
-  _goff_n=0; _goff_task=0
-  while read -r tid orig; do
-    case "$tid" in ''|*[!0-9]*) continue;; esac
-    case "$orig" in ''|*[!0-9-]*) continue;; esac
-    [ -d "/proc/$tid" ] || continue
-    cur=$(nice_of "$tid"); case "$cur" in ''|*[!0-9-]*) continue;; esac
-    renice -n $((orig - cur)) -p "$tid" >/dev/null 2>&1 && _goff_n=$((_goff_n+1))
-    # v1.13.14: 还原 CPU 亲和（system_server 的 GC 线程默认继承全核 mask ff）
-    taskset -p ff "$tid" >/dev/null 2>&1 && _goff_task=$((_goff_task+1))
-  done < "$RUN/gc_boost.bak"
-  rm -f "$RUN/gc_boost.bak" 2>/dev/null
-  logx A "act=gc_boost_off restored=$_goff_n affinity=$_goff_task msg=堆危机解除_GC线程优先级与亲和已无损还原"
-  return 0
-}
-
-# v1.13.14: 内核路径兜底——am 走 binder 到 system_server，在堆濒死时必然不可达
-# （11-07 取证：relief 22 次全 fail、ss_heap_trim 全天 0 次）。drop_caches 写内核
-# 接口，不经过 framework，是唯一确定可达的回收路径。作用域：page cache / dentry /
-# inode 等可回收 slab，不触碰 Java 堆本身，也不动 zram。限流：10min/次、1h≤6 次。
-ss_drop_caches() {
-  _now=$(date +%s)
-  _dt=$(cat "$SS_DC_TS" 2>/dev/null); case "$_dt" in ''|*[!0-9]*) _dt=0;; esac
-  [ $((_now - _dt)) -ge "$SS_DC_COOL" ] || { logx S "act=ss_drop_caches skip=cooldown"; return 1; }
-  echo "$_now" >> "$SS_DC_HIST" 2>/dev/null
-  awk -v n="$_now" '$1 > n-3600' "$SS_DC_HIST" 2>/dev/null | tail -n 12 > "$SS_DC_HIST.t"
-  mv "$SS_DC_HIST.t" "$SS_DC_HIST" 2>/dev/null
-  _hc=$(awk 'END{print NR}' "$SS_DC_HIST" 2>/dev/null); case "$_hc" in ''|*[!0-9]*) _hc=0;; esac
-  [ "$_hc" -le "$SS_DC_HOUR_MAX" ] || { logx S "act=ss_drop_caches skip=hourly_cap=$_hc"; return 1; }
-  if echo 3 > /proc/sys/vm/drop_caches 2>/dev/null; then
-    echo "$_now" > "$SS_DC_TS" 2>/dev/null
-    logx A "act=ss_drop_caches result=ok hour_cnt=$_hc msg=am不可达_改走内核路径回收页缓存与可回收slab"
-    return 0
-  fi
-  logx W "act=ss_drop_caches result=fail msg=内核路径写入失败"
-  return 1
-}
-
-# v1.13.0: 第三参 force——升级链复测路径跳过 SS_TRIM_COOL（trim 弱杠杆但零成本，
-# 复测未回落时追加一次）；成功后登记 SS_TRIM_PRE_KB 并排 300s 强制复测。
-ss_heap_relief() {
-  _ss=$1; _hk=$2; _force=$3
-  _now=$(date +%s)
-  _lt=$(cat "$SS_TRIM_TS" 2>/dev/null); case "$_lt" in ''|*[!0-9]*) _lt=0;; esac
-  # v1.13.14: 统一最小尝试间隔——force（极限压制）每轮都会调用，若不限流会在 60s
-  # 循环里反复阻塞 8s；这里对成功/失败都计戳。
-  _att_ts=$RUN/ss_trim_attempt.ts
-  _at=$(cat "$_att_ts" 2>/dev/null); case "$_at" in ''|*[!0-9]*) _at=0;; esac
-  [ $((_now - _at)) -ge "$SS_TRIM_ATTEMPT_MIN" ] || return 0
-  echo "$_now" > "$_att_ts" 2>/dev/null
-  if [ "$_force" != "force" ]; then
-    [ $((_now - _lt)) -ge "$SS_TRIM_COOL" ] || return 0
-  fi
-  # v1.13.4 修复（W1，10-27 09:53 实证）：冷却戳仅在成功后写入——旧实现先写戳后调 am，
-  # system_server 饱和期 am 不可达时失败照样消耗 600s 冷却，二次泄压被静默拦截，
-  # 直至崩溃期间堆失明。
-  # v1.13.14：单轮最多 SS_TRIM_TRIES 次尝试（立即 / +4s / +8s，总阻塞 ≤8s），抓
-  # framework 短暂可用窗口；全部失败则转内核路径 ss_drop_caches 兜底。
-  # v1.13.19：每次尝试用 timeout 2 包裹——原实现若 am 在 binder 上挂死，8s 的"上限"
-  # 不成立（11-07 实测单次可达 9s 级），cpu_guard 主循环（含 CPU 护栏）整段停摆。
-  _ok=0; _try=1
-  while [ "$_try" -le "$SS_TRIM_TRIES" ]; do
-    if $AM_TO am send-trim-memory "$_ss" RUNNING_CRITICAL >/dev/null 2>&1; then _ok=1; break; fi
-    [ "$_try" -lt "$SS_TRIM_TRIES" ] && sleep "$SS_TRIM_TRY_GAP"
-    _try=$((_try + 1))
-  done
-  if [ "$_ok" = "1" ]; then
-    echo "$_now" > "$SS_TRIM_TS" 2>/dev/null
-    SS_TRIM_PRE_KB=$_hk
-    SS_RECHECK_DUE=$((_now + SS_TRIM_RECHECK))
-    logx A "act=ss_heap_relief level=RUNNING_CRITICAL pid=$_ss java_heap_kb=$_hk tries=$_try recheck=${SS_TRIM_RECHECK}s msg=已请求泄压_${SS_TRIM_RECHECK}s后复测"
-  else
-    SS_TRIM_FAILS=$((SS_TRIM_FAILS + 1))
-    SS_TRIM_PRE_KB=$_hk
-    SS_RECHECK_DUE=$((_now + SS_TRIM_RETRY))
-    logx W "act=ss_heap_relief result=fail pid=$_ss java_heap_kb=$_hk fails=$SS_TRIM_FAILS tries=$SS_TRIM_TRIES retry=${SS_TRIM_RETRY}s msg=am不可达_转内核路径兜底"
-    ss_drop_caches
-    if [ "$_hk" -ge "$SS_ALERT_KB" ] && [ ! -f "$SS_ADVICE_FLAG" ]; then
-      echo "advised=$(date '+%m-%d %H:%M:%S') java_heap_kb=$_hk reason=relief_fail" > "$SS_ADVICE_FLAG" 2>/dev/null
-      logx E "advise=soft_reboot reason=ss_relief_fail fails=$SS_TRIM_FAILS java_heap_kb=$_hk msg=泄压不可达且接近堆上限_建议尽快择机软重启"
-      notify_alert advise "MemTonic: system_server 泄压不可达且接近堆上限（$(( _hk / 1024 ))MB）——建议尽快择机软重启"
-      SS_TRIM_FAILS=0; SS_TRIM_PRE_KB=0; SS_RECHECK_DUE=0
-    fi
-  fi
-}
-
-ss_health_probe() {
-  _ss=$(pidof system_server 2>/dev/null); _ss=${_ss%% *}
-  case "$_ss" in ''|*[!0-9]*) return 0;; esac
-  [ -r "/proc/$_ss/status" ] || return 0
-  _st=$(awk '/^VmRSS/{r=$2}/^VmSwap/{s=$2}/^Threads/{t=$2}END{print r+0,s+0,t+0}' "/proc/$_ss/status" 2>/dev/null)
-  set -- $_st
-  _rss=$1; _swap=$2; _threads=$3
-  case "$_rss" in ''|*[!0-9]*) return 0;; esac
-  case "$_swap" in ''|*[!0-9]*) return 0;; esac
-  case "$_threads" in ''|*[!0-9]*) return 0;; esac
-
-  _now=$(date +%s)
-  # v1.12.9: 定期兜底探测（防"堆爬升但 RSS 未越限"盲区）
-  # v1.13.0: 深夜(00-06 CST)间隔 1800→600——两次 OOM 的堆爬升尾段都只有 ~5.5 分钟，
-  # 白天节奏在深夜等于盲区。小时由 epoch 换算（CST=UTC+8 无夏令时），零新增 fork。
-  _pt=$(cat "$SS_PROBE_TS" 2>/dev/null); case "$_pt" in ''|*[!0-9]*) _pt=0;; esac
-  _need_probe=0
-  _every=$SS_PROBE_EVERY
-  _hr=$(( ( _now / 3600 + 8 ) % 24 ))
-  [ "$_hr" -le 6 ] && _every=$SS_PROBE_EVERY_NIGHT
-  # v1.13.14: 抑制态极限压制——有 staged rollback 不能重启时探测加密到 60s。
-  # 11-07 取证：22:59 抑制建议后模块 4 分钟内再无任何动作，随后 501MB OOM。
-  _extreme=0
-  if [ -f "$RUN/reboot_suppressed.flag" ]; then _extreme=1; _every=$SS_PROBE_EVERY_EXTREME; fi
-  if [ $((_now - _pt)) -ge "$_every" ]; then
-    # v1.13.15 A-1: 到点后先判断"是否值得 dumpsys"——RSS 变化 <30MB 且 mem PSI <5%
-    # 且非抑制态/非复测期 → 跳过本次探测（保留轻量 RSS 观测），把 98 次/天降到 10–20 次。
-    # dumpsys meminfo 在高水位上本身会强迫 system_server 重分配（代码早有此注记）。
-    _worth=1
-    if [ "$_extreme" != "1" ] && [ "$SS_RECHECK_DUE" -eq 0 ]; then
-      _lr=0
-      [ -r "$SS_LAST_RSS" ] && IFS= read -r _lr < "$SS_LAST_RSS" 2>/dev/null
-      case "$_lr" in ''|*[!0-9]*) _lr=0;; esac
-      _dr=$((_rss - _lr)); [ "$_dr" -lt 0 ] && _dr=$((-_dr))
-      _hp=0
-      if [ -r /proc/pressure/memory ]; then
-        IFS= read -r _pl < /proc/pressure/memory 2>/dev/null
-        case "$_pl" in
-          *avg10=*) _pv=${_pl#*avg10=}; _pv=${_pv%% *}; _pi=${_pv%%.*}
-                    case "$_pi" in ''|*[!0-9]*) _pi=0;; esac
-                    [ "$_pi" -ge 5 ] && _hp=1 ;;
-        esac
-      fi
-      if [ "$_lr" -gt 0 ] && [ "$_dr" -lt "$SS_PROBE_SKIP_KB" ] && [ "$_hp" -eq 0 ]; then _worth=0; fi
-      # v1.13.16 B5: 短时斜率兜底——单 tick 涨 >10MB 也算值得探测，
-      # 覆盖"堆缓慢上涨但 |ΔRSS| 未达 30MB"的场景（否则会漏掉爬升尾段）
-      _rt=0
-      [ -r "$SS_RSS_TICK" ] && IFS= read -r _rt < "$SS_RSS_TICK" 2>/dev/null
-      case "$_rt" in ''|*[!0-9]*) _rt=0;; esac
-      if [ "$_rt" -gt 0 ] && [ $((_rss - _rt)) -ge "$SS_RSS_RISE_KB" ]; then _worth=1; fi
-      echo "$_rss" > "$SS_RSS_TICK" 2>/dev/null
-    fi
-    if [ "$_worth" = "1" ]; then
-      echo "$_now" > "$SS_PROBE_TS" 2>/dev/null
-      _need_probe=1
-    else
-      _skp=$(( ${_skp:-0} + 1 ))
-      [ $((_skp % 20)) -eq 1 ] && logx S "act=ss_probe_skip rss_kb=$_rss drss_kb=$_dr psi_ge5=$_hp msg=内存无显著变化_跳过dumpsys"
-    fi
-  fi
-  # v1.13.0: trim 后 SS_TRIM_RECHECK 秒强制复测（不受常规节奏限制）
-  if [ "$SS_RECHECK_DUE" -gt 0 ] && [ "$_now" -ge "$SS_RECHECK_DUE" ]; then
-    _need_probe=1
-  fi
-
-  _warn=0
-  [ "$_rss" -ge "$SS_HEALTH_RSS_KB" ] && _warn=1
-  [ "$_swap" -ge "$SS_HEALTH_SWAP_KB" ] && _warn=1
-  [ "$_threads" -ge "$SS_HEALTH_THREADS" ] && _warn=1
-  # v1.13.5 (I4): RSS 趋势告警——连续 3 次探测 >900MB 且斜率上升 = native 膨胀特征
-  # （Java 堆水位管不了 native；纯预警，泄压无手段，决策留用户）
-  if [ "$_rss" -ge 921600 ]; then
-    echo "$_rss" >> "$RUN/rss_hist" 2>/dev/null
-    tail -n 5 "$RUN/rss_hist" > "$RUN/rss_hist.t" 2>/dev/null && mv "$RUN/rss_hist.t" "$RUN/rss_hist" 2>/dev/null
-    _rhc=$(wc -l < "$RUN/rss_hist" 2>/dev/null); case "$_rhc" in ''|*[!0-9]*) _rhc=0;; esac
-    if [ "$_rhc" -ge 3 ]; then
-      _r1=$(sed -n '1p' "$RUN/rss_hist" 2>/dev/null); _r2=$(sed -n '2p' "$RUN/rss_hist" 2>/dev/null); _r3=$(sed -n '3p' "$RUN/rss_hist" 2>/dev/null)
-      if [ "$_r3" -ge "$_r2" ] && [ "$_r2" -ge "$_r1" ]; then
-        [ -f "$RUN/rss_warn.flag" ] || echo "rss_kb=$_rss trend=rising samples=$_r1,$_r2,$_r3 ts=$(date '+%m-%d %H:%M:%S')" > "$RUN/rss_warn.flag" 2>/dev/null
-        logx W "warn=ss_rss_trend rss_kb=$_rss samples=$_r1,$_r2,$_r3 msg=native内存持续膨胀_建议关注"
-      fi
-    fi
-  else
-    if [ -f "$RUN/rss_warn.flag" ]; then
-      rm -f "$RUN/rss_warn.flag" 2>/dev/null
-      logx I "act=ss_rss_recovered rss_kb=$_rss msg=RSS回落_趋势告警清除"
-    fi
-    : > "$RUN/rss_hist" 2>/dev/null
-  fi
-  if [ "$_warn" -eq 1 ]; then
-    _last=$(cat "$SS_HEALTH_STATE" 2>/dev/null)
-    case "$_last" in ''|*[!0-9]*) _last=0;; esac
-    if [ $((_now - _last)) -ge "$SS_HEALTH_COOL" ]; then
-      echo "$_now" > "$SS_HEALTH_STATE" 2>/dev/null
-      logx W "warn=system_server_pressure rss_kb=$_rss swap_kb=$_swap threads=$_threads note=heap_or_thread_growth"
-      _need_probe=1
-    fi
-  fi
-
-  [ "$_need_probe" -eq 1 ] || return 0
-  ss_heap_probe "system_server_pressure"
-  # v1.13.15 A-1: 记录本次探测时的 RSS，供下次"是否值得探测"判断（零 fork 写入）
-  echo "$_rss" > "$SS_LAST_RSS" 2>/dev/null
-
-  # v1.12.9: FR-SS 双水位判定（基于本次探测写入的 SS_HEAP_KB_FILE）
-  _hk=$(cat "$SS_HEAP_KB_FILE" 2>/dev/null); case "$_hk" in ''|*[!0-9]*) return 0;; esac
-  # v1.13.0: trim 复测评估 + 堆回落恢复。升级链：trim → 300s 复测 → 未回落再 trim →
-  # 再复测 → 连续 2 次无效=真泄漏特征 → 落 SS_ADVICE_FLAG（WebUI 横幅）——建议只递
-  # 到眼前，绝不代用户重启。
-  if [ "$SS_RECHECK_DUE" -gt 0 ] && [ "$_now" -ge "$SS_RECHECK_DUE" ]; then
-    SS_RECHECK_DUE=0
-    if [ "$_hk" -ge "$SS_TRIM_KB" ] && [ "$_hk" -ge $((SS_TRIM_PRE_KB - 5120)) ]; then
-      SS_TRIM_FAILS=$((SS_TRIM_FAILS + 1))
-      if [ "$SS_TRIM_FAILS" -ge 2 ]; then
-        [ -f "$SS_ADVICE_FLAG" ] || echo "advised=$(date '+%m-%d %H:%M:%S') java_heap_kb=$_hk reason=trim_ineffective" > "$SS_ADVICE_FLAG" 2>/dev/null
-        logx E "advise=soft_reboot reason=ss_trim_ineffective fails=$SS_TRIM_FAILS java_heap_kb=$_hk msg=trim两次无效_真泄漏特征_建议尽快软重启止损"
-        notify_alert advise "MemTonic: system_server 堆 trim 两次无效（真泄漏特征，$_(( _hk / 1024 ))MB）——建议尽快软重启止损（GC加速已介入缓解）"
-        SS_TRIM_FAILS=0
-        SS_TRIM_PRE_KB=0
-      else
-        logx W "warn=ss_trim_recheck fails=$SS_TRIM_FAILS java_heap_kb=$_hk pre_kb=$SS_TRIM_PRE_KB msg=trim后${SS_TRIM_RECHECK}s未回落_追加泄压"
-        SS_TRIM_PRE_KB=$_hk
-        ss_heap_relief "$_ss" "$_hk" force
-        SS_RECHECK_DUE=$((_now + SS_TRIM_RECHECK))
-      fi
-    else
-      SS_TRIM_FAILS=0
-      SS_TRIM_PRE_KB=0
-    fi
-  elif [ "$_hk" -lt "$SS_PREP_KB" ]; then
-    # v1.13.14: 趋势判定——连续 3 次探测均低于预备线（430MB）才认定回落并撤销建议。
-    # 旧实现单点 <450MB 即撤销；11-07 实测 450MB 撤销后 6 分钟反弹到 477MB，
-    # 建议反复失效、用户处置窗口被浪费。
-    _hc=$(awk 'END{print NR}' "$SS_HEAP_HIST" 2>/dev/null); case "$_hc" in ''|*[!0-9]*) _hc=0;; esac
-    _h2=$(awk 'END{print p} {p=$0}' "$SS_HEAP_HIST" 2>/dev/null)
-    _h3=$(awk 'END{print q} {q=p; p=$0}' "$SS_HEAP_HIST" 2>/dev/null)
-    case "$_h2" in ''|*[!0-9]*) _h2=$_hk;; esac
-    case "$_h3" in ''|*[!0-9]*) _h3=$_hk;; esac
-    if [ "$_hc" -ge 3 ] && [ "$_h2" -lt "$SS_PREP_KB" ] && [ "$_h3" -lt "$SS_PREP_KB" ]; then
-      if [ -f "$SS_ADVICE_FLAG" ]; then
-        # v1.13.6 (F1): 旗标属主保护——FR-SS 只清自己落的旗标（trim_ineffective/relief_fail）。
-        case "$(cat "$SS_ADVICE_FLAG" 2>/dev/null)" in
-          *reason=trim_ineffective*|*reason=relief_fail*)
-            rm -f "$SS_ADVICE_FLAG" 2>/dev/null
-            logx I "act=ss_heap_recovered java_heap_kb=$_hk samples=$_h3,$_h2,$_hk msg=连续3次低于预备线_软重启建议已撤除"
-            ;;
-          *)
-            logx S "act=ss_heap_recovered java_heap_kb=$_hk note=advice_flag_owned_by_other_msg=属主保护_未动他方旗标"
-            ;;
-        esac
-      fi
-      SS_TRIM_FAILS=0
-      SS_TRIM_PRE_KB=0
-      SS_RECHECK_DUE=0
-    else
-      logx S "act=ss_heap_holding java_heap_kb=$_hk samples=$_h3,$_h2,$_hk msg=低于泄压线但趋势未确认_暂不撤销建议"
-    fi
-  fi
-  # v1.13.14: 极限压制态——≥480MB，或处于抑制态（有 staged rollback 不能重启）且 ≥450MB。
-  # 全手段强制叠加：am 短重试 ×3 + 内核路径 drop_caches + GC 提权加绑核。
-  if [ "$_hk" -ge "$SS_EXTREME_KB" ] || { [ "$_extreme" = "1" ] && [ "$_hk" -ge "$SS_TRIM_KB" ]; }; then
-    [ -f "$RUN/ss_heap_extreme.flag" ] || echo "java_heap_kb=$_hk ts=$(date '+%m-%d %H:%M:%S')" > "$RUN/ss_heap_extreme.flag" 2>/dev/null
-    logx W "warn=ss_heap_extreme java_heap_kb=$_hk line=$SS_EXTREME_KB msg=进入极限压制_am重试加drop_caches加GC提权全叠加"
-    ss_heap_relief "$_ss" "$_hk" force
-    ss_drop_caches
-  elif [ -f "$RUN/ss_heap_extreme.flag" ] && [ "$_hk" -lt "$SS_TRIM_KB" ]; then
-    rm -f "$RUN/ss_heap_extreme.flag" 2>/dev/null
-    logx I "act=ss_heap_extreme_exit java_heap_kb=$_hk msg=退出极限压制_堆已低于泄压线"
-  fi
-  if [ "$_hk" -ge "$SS_ALERT_KB" ]; then
-    logx W "warn=ss_heap_critical java_heap_kb=$_hk msg=接近堆上限_哨兵已自动降载_建议择机软重启"
-    ss_heap_relief "$_ss" "$_hk"
-  elif [ "$_hk" -ge "$SS_TRIM_KB" ]; then
-    ss_heap_relief "$_ss" "$_hk"
-  fi
-  # v1.13.14: GC 加速触发线 480→460MB、解除线 450→440MB（随阈值前移同步下移）。
-  # 目标 nice -15 + 尝试绑大核；GEMINI 铁律：已 ≤-15 不反向降级，还原走 delta 法 + 亲和 ff。
-  if [ "$_hk" -ge "$SS_GC_KB" ] || [ "$SS_TRIM_FAILS" -ge 2 ]; then
-    [ "$gc_state" -eq 0 ] && { gc_boost_on; gc_state=1; }
-  elif [ "$_hk" -lt "$SS_GC_RELEASE_KB" ] && [ "$gc_state" -eq 1 ]; then
-    gc_boost_off
-    gc_state=0
   fi
   return 0
 }
 
-# v1.13.4: boot_postmortem —— 启动善后横幅（W3，源自 10-27 重启循环取证）：模块死亡于
-# 全量重启后无从自证，新 boot 里把「上次会话是否异常中断 + 系统记录的重启原因 + rescue
-# 计数」一次讲清；非常规原因（回滚/内核 panic/watchdog/未知 shell 级）落 W/E 日志 +
-# boot_context.flag（WebUI 横幅）。成本：4 次 getprop + 1 次文件判断，仅启动时一次。
-# .clean_stop 标记语义：stop 路径写入、本函数读取后删除——缺失即上次会话被异常终止。
 boot_postmortem() {
-  _br=$(getprop sys.boot.reason 2>/dev/null)
-  _brl=$(getprop sys.boot.reason.last 2>/dev/null)
-  _rbc=$(getprop sys.rescue_boot_count 2>/dev/null); case "$_rbc" in ''|*[!0-9]*) _rbc=0;; esac
-  _rlv=$(getprop persist.sys.rescue_level 2>/dev/null); case "$_rlv" in ''|*[!0-9]*) _rlv=0;; esac
-  _abn=1
-  [ -f "$RUN/.clean_stop" ] && _abn=0
-  logx I "event=boot_context reason=$_br last=$_brl rescue_boot=$_rbc rescue_level=$_rlv prev_abnormal=$_abn"
-  _lv=0; _why=""
-  case "$_br" in
-    *panic*|*watchdog*) _lv=2; _why="内核级异常重启" ;;
-    *rollback*) _lv=2; _why="CrashRecovery 回滚重启_救助链已触发" ;;
-    reboot|reboot,userrequest) : ;;
-    "") : ;;
-    *) _lv=1; _why="非常规重启原因_建议关注发起者" ;;
-  esac
-  if [ "$_rbc" -gt 0 ]; then [ "$_lv" -lt 1 ] && _lv=1; _why="$_why;rescue_boot=$_rbc"; fi
-  if [ "$_rlv" -gt 0 ]; then [ "$_lv" -lt 1 ] && _lv=1; _why="$_why;rescue_level=$_rlv"; fi
-  if [ "$_abn" -eq 1 ]; then [ "$_lv" -lt 1 ] && _lv=1; _why="$_why;上次会话未正常收尾"; fi
-  if [ "$_lv" -ge 1 ]; then
-    echo "boot_reason=$_br rescue_boot=$_rbc rescue_level=$_rlv prev_abnormal=$_abn note=$_why" > "$RUN/boot_context.flag" 2>/dev/null
-    if [ "$_lv" -ge 2 ]; then
-      logx E "warn=boot_postmortem reason=$_br msg=$_why"
-    else
-      logx W "warn=boot_postmortem reason=$_br msg=$_why"
-    fi
-    notify_alert boot "MemTonic 开机善后: 本次开机原因=$_br；$_why"
-  else
-    [ -f "$RUN/boot_context.flag" ] && rm -f "$RUN/boot_context.flag" 2>/dev/null
-  fi
-  rm -f "$RUN/.clean_stop" 2>/dev/null
-  return 0
+  logx I "event=boot_postmortem bootreason=$(getprop ro.boot.bootreason 2>/dev/null) rescue_count=$(getprop sys.rescue_boot_count 2>/dev/null)"
 }
 
-# camera_vip_on: 相机激活时提权 cameraserver 与 HAL provider（严格遵守增量语义）
-# 设计约束：
-#   1. 通过 cmdline 匹配 provider PID，避免 comm 截断问题；
-#   2. 备份各进程原始 nice 到 $CAMERA_VIP_BAK，用于退出时精确还原；
-#   3. GEMINI.md 铁律：若进程已享有高于 -10 的优先级，跳过（严禁反向降级）。
-# v1.9.10: 记录每个目标的 renice 结果（实测 cameraserver nice=0 → renice 后仍=0，
-#   疑被 Android SchedulingPolicy 服务拉回；记录 actual_nice 供审计判定是否生效）。
-# v1.12.0: provider 定位改用 find_camera_provider（行为与原两段式逐字一致）。
-camera_vip_on() {
-  : > "$CAMERA_VIP_BAK" 2>/dev/null
-  # 定位 cameraserver（pgrep 精确匹配进程名）
-  cs_pid=$(pgrep -x cameraserver 2>/dev/null | head -n 1)
-  prov_pid=$(find_camera_provider)
-  for pid in $cs_pid $prov_pid; do
-    case "$pid" in ''|*[!0-9]*) continue;; esac
-    [ -d "/proc/$pid" ] || continue
-    cur=$(nice_of "$pid")
-    case "$cur" in ''|*[!0-9-]*) continue;; esac
-    echo "$pid $cur" >> "$CAMERA_VIP_BAK" 2>/dev/null
-    # GEMINI.md 铁律：严禁反向降级已有更高优先级的线程（cur <= -10 说明已更优）
-    [ "$cur" -le -10 ] && { logx S "act=camera_vip_skip pid=$pid cur=$cur reason=already_high"; continue; }
-    renice -n $((-10 - cur)) -p "$pid" >/dev/null 2>&1
-    # v1.9.10: 验证 renice 是否实际生效
-    actual=$(nice_of "$pid")
-    case "$actual" in ''|*[!0-9-]*) actual=NA;; esac
-    if [ "$actual" = "-10" ]; then
-      logx A "act=camera_vip_set pid=$pid nice=$cur→-10 result=ok"
-    else
-      logx W "act=camera_vip_set pid=$pid nice=$cur→-10 result=actual=$actual msg=renice可能被系统调度策略重置"
-    fi
-  done
-  logx A "act=camera_vip_on msg=相机底层服务提权完成"
-}
-
-# camera_vip_off: 相机退出时精确还原底层服务优先级
-# 设计约束：
-#   1. 读取备份文件中的原始 nice；
-#   2. 实时读取当前 nice，计算增量差值后还原（防因系统并发修改导致数值错乱）；
-#   3. 还原完毕后删除备份文件，实现完全无痕退出。
-camera_vip_off() {
-  [ -s "$CAMERA_VIP_BAK" ] || return 0
-  while read -r pid orig; do
-    case "$pid" in ''|*[!0-9]*) continue;; esac
-    [ -d "/proc/$pid" ] || continue
-    cur=$(nice_of "$pid")
-    case "$cur" in ''|*[!0-9-]*) continue;; esac
-    # 数学差值还原：避免直接用原始值作 increment 导致反复累加的经典 Bug
-    renice -n $((orig - cur)) -p "$pid" >/dev/null 2>&1
-  done < "$CAMERA_VIP_BAK"
-  rm -f "$CAMERA_VIP_BAK" 2>/dev/null
-  logx A "act=camera_vip_off msg=相机底层服务优先级已无损还原"
-}
-
-# =========================================================
-# v1.12.0: 相机大核亲和（FR-C2）+ 蓝牙音频守卫辅助（FR-BT）
-# =========================================================
-
-# camera_affinity_on: 相机激活时把 provider 全部线程绑到大核簇（cpu3-7, mask f8）
-# 背景：连拍时 CPU 饱和（PSI cpu some 可达 89%），provider 线程在小核排队 =
-# 取景/编码卡顿；提权(-10)不解决排布问题。
-# 内核语义：sched_setaffinity(pid) 只作用于单线程 → 必须逐 tid 设置。
-# 可逆：逐 tid 记录原始 mask 到 $CAMERA_AFF_BAK，退出时逐 tid 还原。
-# 安全性：仅移动线程不改变优先级/不杀进程；taskset 缺失或失败静默降级。
-camera_affinity_on() {
-  [ -x /system/bin/taskset ] || { logx W "err=affinity_no_taskset msg=taskset不可用_跳过核绑定"; return 0; }
-  prov_pid=$(find_camera_provider)
-  case "$prov_pid" in ''|*[!0-9]*) return 0;; esac
-  [ -d "/proc/$prov_pid" ] || return 0
-  : > "$CAMERA_AFF_BAK" 2>/dev/null
-  _caf_n=0
-  for t in /proc/$prov_pid/task/[0-9]*; do
-    tid=${t##*/}
-    # tr 替代 awk tolower（toybox awk 对 tolower 支持不保证）；taskset 输出 mask 位于 $6
-    _caf_orig=$(taskset -p "$tid" 2>/dev/null | awk '{print $6}' | tr 'A-F' 'a-f')
-    case "$_caf_orig" in ''|*[!0-9a-f]*) continue;; esac
-    [ "$_caf_orig" = "f8" ] && continue
-    echo "$tid $_caf_orig" >> "$CAMERA_AFF_BAK" 2>/dev/null
-    taskset -p f8 "$tid" >/dev/null 2>&1 && _caf_n=$((_caf_n+1))
-  done
-  if [ "$_caf_n" -gt 0 ]; then
-    logx A "act=camera_affinity_on pid=$prov_pid threads=$_caf_n mask=f8 msg=相机provider已绑定大核簇cpu3-7"
-  else
-    logx W "err=camera_affinity_zero msg=无线程成功绑定_检查taskset语义"
-  fi
-}
-
-# camera_affinity_off: 相机退出时逐 tid 还原原始核亲和 mask
-camera_affinity_off() {
-  [ -s "$CAMERA_AFF_BAK" ] || return 0
-  _cao_n=0
-  while read -r tid orig; do
-    case "$tid" in ''|*[!0-9]*) continue;; esac
-    case "$orig" in ''|*[!0-9a-f]*) continue;; esac
-    [ -d "/proc/$tid" ] || continue
-    taskset -p "$orig" "$tid" >/dev/null 2>&1 && _cao_n=$((_cao_n+1))
-  done < "$CAMERA_AFF_BAK"
-  rm -f "$CAMERA_AFF_BAK" 2>/dev/null
-  logx A "act=camera_affinity_off restored=$_cao_n msg=相机provider核亲和已无损还原"
-}
-
-# v1.12.0: bt_stack_cpu <pid> —— BT 栈 CPU jiffies（utime+stime）写入全局 BT_JF（零 fork）
-# mksh 内建 read 直读 /proc/pid/stat：comm 无空格（com.android.blu）→ IFS 拆分第 14/15 字段。
-# 读失败或字段异常置 BT_JF="" 并 return 1。
-bt_stack_cpu() {
-  BT_JF=""
-  IFS=' ' read -r _bj1 _bj2 _bj3 _bj4 _bj5 _bj6 _bj7 _bj8 _bj9 _bj10 _bj11 _bj12 _bj13 _bj14 _bj15 < "/proc/$1/stat" 2>/dev/null || return 1
-  case "${_bj14:-}${_bj15:-}" in ''|*[!0-9]*) return 1;; esac
-  BT_JF=$((_bj14 + _bj15))
-  return 0
-}
-
-# =========================================================
-# v1.13.0: 护航批量引擎 —— guard_boost_batch / guard_restore_batch
-# 背景（10-22 OOM 取证 + 10-25/26 护航风暴实测）：flush/bt2 护航每轮对 66-110 个线程
-#   逐 tid renice（每 tid 2 fork：nice_of + renice）= 每轮 130-220 fork；高 CPU 饱和
-#   窗口里这些 fork 本身就是 GC 饿死的共犯之一。v1.12.9 高CPU退避只压了触发频率，
-#   本引擎把单轮成本降一个量级（~220 fork → ~6）。
-# 语义逐字保持：
-#   boost——GEMINI 铁律（当前 nice 已优于目标即跳过）；bak 行格式不变（"tid 原nice"）；
-#   restore——v1.7.0 Fix-B 差分还原（delta = orig - cur），死亡 tid 自然跳过。
-# 实现：单次 awk 批量读 /proc/*/stat（去 comm 后第 17 字段 = nice，与 self_cpu_ms
-#   同一换算基准）→ sort 按增量分组 → 第二级 awk 按组批量 renice（toybox 重复 -p
-#   传参 ≤40 tid/批，与 storm_restore_pending 同款实证模式）。
-# =========================================================
-guard_boost_batch() {
-  # 用法: guard_boost_batch <目标nice> <bak文件> <pid...>（各 pid 全部线程提权到目标）
-  # stdout = 提权线程数。bak 仅记被判定可提权的 tid（批量 renice 整组成功为常态，
-  # 单 tid 失败时 bak 里多记的 tid 在还原侧差分=0 自动成为 no-op，无损）。
-  _gb_tn=$1; _gb_bak=$2; shift 2
-  : > "$_gb_bak" 2>/dev/null
-  _gb_tids=""
-  for tgt in "$@"; do
-    case "$tgt" in ''|*[!0-9]*) continue;; esac
-    [ -d "/proc/$tgt" ] || continue
-    for t in /proc/$tgt/task/[0-9]*; do
-      _gb_tids="$_gb_tids ${t##*/}"
-    done
-  done
-  [ -n "$_gb_tids" ] || { echo 0; return 0; }
-  # shellcheck disable=SC2086
-  printf '%s\n' $_gb_tids | awk -v tn="$_gb_tn" '
-    { f = "/proc/" $1 "/stat"
-      if ((getline ln < f) <= 0) { close(f); next }
-      close(f)
-      sub(/^[0-9]+ \([^)]*\) /, "", ln)
-      split(ln, a, " ")
-      if (a[17] !~ /^-?[0-9]+$/) next
-      if (a[17] + 0 <= tn + 0) next
-      print (tn - a[17]), $1
-    }' | sort -n | awk -v tn="$_gb_tn" -v bak="$_gb_bak" '
-    function flush() {
-      if (cnt > 0) {
-        system("renice -n " pd " " pids " >/dev/null 2>&1")
-        pids = ""; cnt = 0
-      }
-    }
-    NR == 1 { pd = $1 }
-    $1 != pd { flush(); pd = $1 }
-    {
-      pids = pids " -p " $2
-      cnt++
-      total++
-      print $2, (tn - $1) >> bak
-      if (cnt >= 40) flush()
-    }
-    END { flush(); print total + 0 }
-  '
-}
-
-guard_restore_batch() {
-  # 用法: guard_restore_batch <bak文件>（bak 行："tid 原nice"，空格分隔）
-  # stdout = 已派发还原的 tid 数（差分增量 0 的 tid 跳过为 no-op）。bak 删除与日志由调用方负责。
-  _grb_bak=$1
-  [ -s "$_grb_bak" ] || { echo 0; return 0; }
-  awk '{
-    tid = $1; orig = $2 + 0
-    f = "/proc/" tid "/stat"
-    if ((getline ln < f) <= 0) { close(f); next }
-    close(f)
-    sub(/^[0-9]+ \([^)]*\) /, "", ln)
-    split(ln, a, " ")
-    if (a[17] !~ /^-?[0-9]+$/) next
-    d = orig - (a[17] + 0)
-    if (d == 0) next
-    print d, tid
-  }' "$_grb_bak" | sort -n | awk '
-    function flush() {
-      if (cnt > 0) {
-        system("renice -n " pd " " pids " >/dev/null 2>&1")
-        pids = ""; cnt = 0
-      }
-    }
-    NR == 1 { pd = $1 }
-    $1 != pd { flush(); pd = $1 }
-    {
-      pids = pids " -p " $2
-      cnt++
-      total++
-      if (cnt >= 40) flush()
-    }
-    END { flush(); print total + 0 }
-  '
-}
-
-# bt_guard_boost: BT 栈/HAL/audioserver 逐线程提权至 -8（差分记录到 $RUN/bt_guard.bak）
-# 内核语义：renice(pid=tgid) 只改主线程 → A2DP/HFP 编码线程须逐 tid 提权。
-# GEMINI 铁律：已高于 -8 的线程跳过（严禁反向降级）。
-# v1.13.0: 内循环改 guard_boost_batch 批量引擎。
-bt_guard_boost() {
-  _bgb_n=$(guard_boost_batch -8 "$RUN/bt_guard.bak" "$1" "$2" "$3")
-  logx A "act=bt_guard_on threads=${_bgb_n:-0} nice=-8 msg=蓝牙音频栈已提权_抗CPU争抢"
-}
-
-# bt_guard_restore: 逐 tid 差分还原（v1.13.0: 改 guard_restore_batch 批量引擎）
-bt_guard_restore() {
-  _bgr_n=$(guard_restore_batch "$RUN/bt_guard.bak")
-  rm -f "$RUN/bt_guard.bak" 2>/dev/null
-  logx A "act=bt_guard_off restored=${_bgr_n:-0} msg=蓝牙音频栈优先级已无损还原"
-}
-
-# bt2_guard_boost/restore: FR-BT2 使用独立备份文件，禁止与 FR-BT 共用 bak。
-# 二者触发条件不同，且可在同一 tick 同时成立；共用会导致一方还原时截断另一方的
-# 增量记录，产生优先级泄漏或双重还原。
-bt2_guard_boost() {
-  _b2b_n=$(guard_boost_batch -8 "$RUN/bt2_guard.bak" "$1" "$2" "$3")
-  logx A "act=bt2_guard_boost threads=${_b2b_n:-0} nice=-8 msg=LE/GATT压力护航_独立备份"
-}
-
-bt2_guard_restore() {
-  _b2r_n=$(guard_restore_batch "$RUN/bt2_guard.bak")
-  rm -f "$RUN/bt2_guard.bak" 2>/dev/null
-  logx A "act=bt2_guard_restore restored=${_b2r_n:-0} msg=LE/GATT压力护航_优先级已无损还原"
-}
-
-# flush_guard_boost: face-service 相机会话期间 provider/caller 逐线程提权至 -8（差分记录到 $RUN/flush_guard.bak）
-# 背景（2026-10-16 四连发取证）：face-service (uid 1000) 反复在拥堵期 connect→disconnect
-#   camera ID 4，provider 在 flush 等结果时 CPU/IO 争抢超时，触发 CamX 内部 raise 取证 dump。
-# 与 FR-C2 互补：FR-C2 只在相机 App 前台时护 provider；FR-C3 护"face-service 借相机"窗口。
-# GEMINI 铁律：已高于 -8 的线程跳过。
-# v1.13.0: 内循环改 guard_boost_batch 批量引擎。
-flush_guard_boost() {
-  _fgb_n=$(guard_boost_batch -8 "$RUN/flush_guard.bak" "$1" "$2")
-  logx A "act=flush_guard_on threads=${_fgb_n:-0} nice=-8 msg=face服务借相机_provided已提权"
-}
-# flush_guard_restore: 逐 tid 差分还原（v1.13.0: 改 guard_restore_batch 批量引擎）
-flush_guard_restore() {
-  _fgr_n=$(guard_restore_batch "$RUN/flush_guard.bak")
-  rm -f "$RUN/flush_guard.bak" 2>/dev/null
-  logx A "act=flush_guard_off restored=${_fgr_n:-0} msg=face服务借相机_优先级已无损还原"
-}
-# incident_cleanup：保留最新 10 个黑匣子快照，删除更早的文件（防磁盘无限堆积）
 incident_cleanup() {
-  cnt=$(ls "$RUN"/incident-*.log 2>/dev/null | wc -l)
-  if [ "$cnt" -gt 10 ]; then
-    ls "$RUN"/incident-*.log 2>/dev/null | head -n $((cnt - 10)) | while read -r f; do
-      rm -f "$f" 2>/dev/null
-      logx S "act=incident_cleanup file=${f##*/}"
+  _cnt=$(ls "$RUN"/incident-*.log 2>/dev/null | wc -l)
+  if [ "$_cnt" -gt 5 ]; then
+    ls -t "$RUN"/incident-*.log 2>/dev/null | sed -e '1,5d' | while read -r _f; do
+      rm -f "$_f" 2>/dev/null && logx S "act=incident_cleanup file=${_f##*/}"
     done
   fi
 }
 
-# v1.9.11: check_rollback_disarm —— Staged Rollback 地雷自动排除（P1'）
-# 背景（2026-10-08 取证）：root 环境干扰 mainline APEX staged 激活，session 失败后
-# RollbackManager 遗留 enabling 态回滚；该状态一旦存在，任何软重启都会被应用并
-# 强制 reboot(rollback_staged_install) 完整重启丢失 Root（当日 00:16 事故：
-# CrashRecovery "Rolling back sdkext/adservices, Reason:1" 铁证；8-22 起共 5 次同源）。
-# One UI 16 已移除全部 rollback 管理 shell 命令，唯一有效排除路径：
-#   pm install-abandon <originalSessionId>（rollback 依附 install session 生命周期）。
-# 安全边界：
-#   1. 仅处置"孤儿"回滚——session 已终结（不在 staged-sessions 列表或 isFailed=true）；
-#      待安装的活跃 session 绝不 abandon（否则会取消正常 mainline 更新）；
-#   2. 默认 dry-run 只检测记日志；用户确认后 touch $ROLLBACK_DISARM_ENABLE 启用真实处置；
-#   3. 6 小时去重（发现 enabling 即写 ts；无 enabling 不写，保持下轮检测）；
-#   4. 每次至多处置 1 个；abandon 失败只记日志，绝不重试。
-#   5. dumpsys 输出直连管道不经 shell 变量（>140KB 会触发 ARG_MAX 使检测静默失效，部署实测修复）。
 check_rollback_disarm() {
-  _now=$(date +%s)
-  _last=$(cat "$ROLLBACK_DISARM_TS" 2>/dev/null)
-  case "$_last" in ''|*[!0-9]*) _last=0;; esac
-  [ $((_now - _last)) -lt 21600 ] && return 0
-  # v1.13.19: 复用 rollback_dump_get 的 60s 缓存（原实现本函数内独立 dump 3-4 次，
-  # 每次 ~180ms binder）；落文件同时保留 2026-10-08 的 ARG_MAX 防御（不经 shell 变量）。
-  _rbdf=$(rollback_dump_get)
-  rb_id=$(grep -B1 'state: enabling' "$_rbdf" 2>/dev/null | grep -o '^[0-9][0-9]*' | head -n 1)
-  if [ -z "$rb_id" ]; then
-    return 0
-  fi
-  echo "$_now" > "$ROLLBACK_DISARM_TS" 2>/dev/null
-  rb_sid=$(grep -A20 "^$rb_id:" "$_rbdf" 2>/dev/null | grep -m1 'originalSessionId' | grep -o '[0-9][0-9]*$')
-  if [ -z "$rb_sid" ]; then
-    logx W "warn=rollback_enabling rollback_id=$rb_id msg=originalSessionId解析失败_请手动检查"
-    return 0
-  fi
-  _sess=$(pm list staged-sessions 2>/dev/null | grep "sessionId = $rb_sid;")
-  if [ -z "$_sess" ]; then
-    _sess_state=orphan_gone
-  elif printf '%s' "$_sess" | grep -q 'isFailed = true'; then
-    _sess_state=orphan_failed
-  else
-    _sess_state=active
-  fi
-  if [ ! -f "$ROLLBACK_DISARM_ENABLE" ]; then
-    logx W "event=rollback_disarm_dryrun rollback_id=$rb_id session=$rb_sid sess=$_sess_state msg=dry_run默认_确认后touch_run/rollback_disarm.enable启用"
-    return 0
-  fi
-  if [ "$_sess_state" = "active" ]; then
-    logx W "event=rollback_disarm_skipped rollback_id=$rb_id session=$rb_sid reason=session_active msg=待安装更新不触碰"
-    return 0
-  fi
-  _ab_out=$(pm install-abandon "$rb_sid" 2>&1)
-  _ab_rc=$?
-  if [ "$_ab_rc" -eq 0 ] && [ "$_ab_out" = "Success" ]; then
-    _chk=$(grep -A2 "^$rb_id:" "$_rbdf" 2>/dev/null | grep -c 'state: enabling')
-    case "$_chk" in ''|*[!0-9]*) _chk=1;; esac
-    if [ "$_chk" -eq 0 ]; then
-      echo "$(date '+%m-%d %H:%M:%S') rollback_id=$rb_id session=$rb_sid sess=$_sess_state" > "$ROLLBACK_DISARM_FLAG" 2>/dev/null
-      logx A "act=rollback_disarm rollback_id=$rb_id session=$rb_sid sess=$_sess_state result=ok"
-    else
-      logx W "act=rollback_disarm rollback_id=$rb_id session=$rb_sid result=unclear msg=abandon报Success但状态未刷新_待下轮复查"
-    fi
-  else
-    logx W "act=rollback_disarm rollback_id=$rb_id session=$rb_sid result=fail rc=$_ab_rc out=${_ab_out:-empty}"
-  fi
+  _rb_enabling=$(dumpsys rollback 2>/dev/null | grep -c 'state: enabling')
+  case "$_rb_enabling" in ''|*[!0-9]*) _rb_enabling=0;; esac
+  [ "$_rb_enabling" -gt 0 ] || return 0
+  [ ! -f "$RUN/rollback_disarm.enable" ] && { logx W "warn=rollback_disarm_dryrun active_enabling=$_rb_enabling msg=发现enabling回滚但disarm未开启"; return 0; }
+  for _j in /data/rollback/*/rollback.json; do
+    [ -f "$_j" ] || continue
+    _sid=$(awk -F': ' '/"sessionId"/{gsub(/[, ]/,"",$2); print $2; exit}' "$_j" 2>/dev/null)
+    case "$_sid" in ''|*[!0-9]*) continue;; esac
+    pm install-abandon "$_sid" >/dev/null 2>&1
+    logx A "act=rollback_disarm abandoned_session=$_sid msg=已废弃孤儿回滚session"
+  done
 }
 
-# v1.10.0: psi_mem_read —— 无 fork 读内存 PSI（供 60s 探针高频调用）
-# mksh 内建 read 两次独立打开（每次重开文件，规避 seq_file 单次 read() 吞全量后
-# 二次 read 直接 EOF 的坑——复合 `{ read; read; } < file` 模式真机实测必失败）；
-# 全局变量返回：P_S10 / P_S60 / P_F10（整数），读取失败 return 1 且不触碰变量。
-# 注意：故意不用 echo+$() 模式——命令替换会引入子 shell fork，违背零 fork 设计。
 psi_mem_read() {
-  local _s10 _s60 _f10
-  read -r _ _s10 _s60 _ < /proc/pressure/memory 2>/dev/null || return 1
-  read -r _ _f10 _ < /proc/pressure/memory 2>/dev/null || return 1
-  _s10=${_s10#avg10=}; _s60=${_s60#avg60=}; _f10=${_f10#avg10=}
-  _s10=${_s10%%.*}; _s60=${_s60%%.*}; _f10=${_f10%%.*}
-  case "$_s10$_s60$_f10" in ''|*[!0-9]*) return 1;; esac
-  P_S10=$_s10; P_S60=$_s60; P_F10=$_f10
+  [ -r /proc/pressure/memory ] || return 1
+  P_S10=$(awk -F'avg10=' '/some/{print $2; exit}' /proc/pressure/memory 2>/dev/null); P_S10=${P_S10%% *}
+  P_F10=$(awk -F'avg10=' '/full/{print $2; exit}' /proc/pressure/memory 2>/dev/null); P_F10=${P_F10%% *}
   return 0
 }
 
-# v1.12.2: fg_majflt_sum —— 单次 awk 读取 top-app 全部线程（cgroup tasks）的 majflt 累计和。
-# top-app 任务列表来自 /dev/cpuset/top-app/tasks，每行 tid，含主线程和线程。
-# 每 tid 读 /proc/<tid>/stat，去 comm 后第 10 字段（procfs 原始字段 11）=majflt。
-# cgroup 不存在或 tasks 为空时 return 1（调用方按 NA 处理）。
-fg_majflt_sum() {
-  local _path="$1"
-  [ -n "$_path" ] || _path=/dev/cpuset/top-app/tasks
-  [ -r "$_path" ] || return 1
-  awk '
-    {
-      tid=$1
-      mf=0
-      while ((getline line < ("/proc/" tid "/stat")) > 0) {
-        sub(/^[0-9]+ \([^)]*\) /, "", line)
-        split(line, f, " ")
-        mf = f[10] + 0
-        break
-      }
-      total += mf
-    }
-    END { print total+0 }
-  ' "$_path" 2>/dev/null
-}
-# v1.10.0: mem_blackbox —— 灾难快照落盘（黑匣子，触发式稀有事件）
-# 用法：mem_blackbox <trigger> <some10> <some60> <full10>
-# L1 内容（PSI 三项 + avail/swap + kswapd）+ L2 内容（单次 /proc/[0-9]*/stat 遍历
-# 同时取 majflt/rss 双指标 Top10，实测同型扫描 ~250ms；前 3 名补包名便于定位）。
-# 轮转保留最新 5 份（blackbox-*），与 incident-* 互不挤占。
 mem_blackbox() {
-  _trig=$1; _s10=$2; _s60=$3; _f10=$4
-  _bb="$RUN/blackbox-$(date '+%Y%m%d_%H%M%S').log"
-  _sw=$(awk '/^SwapTotal/{t=$2}/^SwapFree/{f=$2}END{print t-f}' /proc/meminfo 2>/dev/null)
-  _ks=$(pgrep -x kswapd0 2>/dev/null | head -n 1)
-  _kscpu=$(self_cpu_ms "$_ks" 2>/dev/null)
-  [ -n "$_kscpu" ] || _kscpu=NA
-  {
-    echo "# MemTonic blackbox $(date '+%m-%d %H:%M:%S') trigger=$_trig"
-    echo "psi_mem some10=${_s10}% some60=${_s60}% full10=${_f10}%"
-    echo "psi_cpu_some10=$(psi_val cpu some)% psi_io_some10=$(psi_val io some)%"
-    echo "avail_kb=$(avail_kb) swap_used_kb=${_sw:-NA}"
-    echo "kswapd_pid=${_ks:-NA} kswapd_cpu_total_ms=$_kscpu"
-    echo "# top10: majflt rss_kb pid pkg"
-    awk '
-      FNR == 1 {
-        pid = FILENAME; sub(/\/proc\//, "", pid); sub(/\/stat.*/, "", pid)
-        line = $0; sub(/^[0-9]+ \([^)]*\) /, "", line)
-        split(line, f, " ")
-        if (f[10] > 0 || f[22] > 8192) print f[10], f[22], pid
-      }
-    ' /proc/[0-9]*/stat 2>/dev/null | sort -rn | head -n 10 | while read -r mf rs bp; do
-      echo "majflt=$mf rss_kb=$rs pid=$bp pkg=$(pkg_of "$bp" 2>/dev/null)"
-    done
-  } > "$_bb" 2>/dev/null
-  # 轮转：保留最新 5 份
-  ls "$RUN"/blackbox-*.log 2>/dev/null | sort -r | tail -n +6 | while read -r old; do
-    rm -f "$old" 2>/dev/null
-  done
-  logx A "act=mem_blackbox file=${_bb##*/} trigger=$_trig psi_mem_some10=${_s10}%"
-  update_module_desc   # v1.11.0: 黑匣子落盘即时刷新卡片描述
+  _ts=$(date '+%Y%m%d_%H%M%S')
+  _bb="$RUN/blackbox-${_ts}.log"
+  (
+    echo "=== MEMORY CRISIS BLACKBOX: $_ts reason=$1 ==="
+    echo "--- MEMINFO ---" && cat /proc/meminfo 2>/dev/null
+    echo "--- PSI ---" && cat /proc/pressure/memory 2>/dev/null
+    echo "--- TOP 10 RSS ---"
+    for _d in /proc/[0-9]*; do
+      _p=${_d##*/}
+      [ -r "/proc/$_p/statm" ] && read -r _vmrss _ < "/proc/$_p/statm" 2>/dev/null && echo "$_vmrss $_p $(pkg_of "$_p")"
+    done 2>/dev/null | sort -nr | head -n 10
+  ) > "$_bb" 2>&1 &
+  logx E "act=mem_blackbox path=$_bb reason=$1"
 }
 
-# v1.11.0: collect_stats —— 汇总模块运行统计（key=value 单行，供卡片描述与 WebUI 复用）
-# 计数语义：当前 memtonic.log 周期内（日志超 512KB 基准截断后从零重计，v1.13.0 由 256KB 上调）；
-# 读取失败静默降级（计数按 0 处理，不产生错误输出）。
-# P1(2026-11-05): 新增 5 个能力计数（flush/gcboost/ssprobe/forecast/bt3），供 WebUI 计数卡扩展；
-# 仅追加字段，旧消费者（update_module_desc 的 for kv 循环）自动忽略未识别键，行为不变。
 collect_stats() {
   _st_pid=$(cat "$PIDF" 2>/dev/null); _st_pid=${_st_pid%%:*}
   _st_state=stopped
-  case "$_st_pid" in ''|*[!0-9]*) _st_pid=NA;; *) [ -d /proc/$_st_pid ] && _st_state=running;; esac
-  # v1.13.19: 14 次 grep -c（WebUI 每 30s 自刷新 = 每次 14 个 fork + 14 次 open）合并为
-  # 单次 awk 扫描。语义逐项等价：awk pattern-action 按行触发，与 grep -c 的"匹配行数"
-  # 一致；多模式用 || 组合，避免一行被计两次。中文字面量用 index() 而非正则，规避
-  # toybox awk 的 locale 差异。输出固定 14 个整数，顺序即下方 set -- 的赋值顺序。
+  case "$_st_pid" in ''|*[!0-9]*) _st_pid=NA;; *) [ -d "/proc/$_st_pid" ] && _st_state=running;; esac
   _st_cnt=$(awk '
+    /act=camera_guard_on/ || /act=flush_guard_on/ {cam++}
     /event=shield_activate/ {sh++}
+    /act=screenshot_boost/ || /act=screenshot_sentinel_on/ {sc++}
     /event=storm_start/ {st++}
-    /event=cpu_rogue_intervene/ || /event=cpu_extreme_intervene/ {ro++}
+    /event=cpu_rogue_intervene/ || /event=cpu_extreme_intervene/ || /act=rogue_ionice/ {ro++}
     (index($0,"内存压实完成")>0) || (/act=fg_compact/ && /result=ok/) {cp++}
-    /act=mem_blackbox/ {bb++}
-    /event=crash_detected/ {cr++}
-    /event=rollback_disarm/ {rb++}
-    /warn=fg_majflt_burst/ {mj++}
-    /act=bt_guard_on/ || /act=bt2_guard_on/ {bt++}
-    /act=flush_guard_on/ {fl++}
-    /act=gc_boost_on/ {gb++}
-    /act=ss_heap_probe/ {sp++}
-    /warn=mem_forecast/ || /act=forecast_compact/ {fc++}
-    /act=bt3_guard_on/ {b3++}
-    END {printf "%d %d %d %d %d %d %d %d %d %d %d %d %d %d\n", sh,st,ro,cp,bb,cr,rb,mj,bt,fl,gb,sp,fc,b3}
+    /event=rollback_disarm/ || /warn=staged_rollback/ {rb++}
+    /event=crash_detected/ || /act=mem_blackbox/ {cr++}
+    END { print cam+0, sh+0, sc+0, st+0, ro+0, cp+0, rb+0, cr+0 }
   ' "$LOG" 2>/dev/null)
   set -- $_st_cnt
-  _st_shield=${1:-0}; _st_storm=${2:-0}; _st_rogue=${3:-0}; _st_compact=${4:-0}
-  _st_blackbox=${5:-0}; _st_crash=${6:-0}; _st_rollback=${7:-0}; _st_mjburst=${8:-0}
-  _st_bt=${9:-0}; _st_flush=${10:-0}; _st_gcboost=${11:-0}; _st_ssprobe=${12:-0}
-  _st_forecast=${13:-0}; _st_bt3=${14:-0}
-  for _k in _st_shield _st_storm _st_rogue _st_compact _st_blackbox _st_crash _st_rollback _st_mjburst _st_bt _st_flush _st_gcboost _st_ssprobe _st_forecast _st_bt3; do
+  _st_cam=${1:-0}; _st_shield=${2:-0}; _st_sc=${3:-0}; _st_storm=${4:-0}
+  _st_rogue=${5:-0}; _st_compact=${6:-0}; _st_rollback=${7:-0}; _st_crash=${8:-0}
+  for _k in _st_cam _st_shield _st_sc _st_storm _st_rogue _st_compact _st_rollback _st_crash; do
     eval "v=\$$_k"; case "$v" in ''|*[!0-9]*) eval "$_k=0";; esac
   done
   psi_mem_read || P_S10=NA P_F10=NA
   _st_ssheap=$(cat "$SS_HEAP_KB_FILE" 2>/dev/null); case "$_st_ssheap" in ''|*[!0-9]*) _st_ssheap=NA;; esac
-  # v1.13.18: 整机内存字段（零 fork）——WebUI 健康分需要，而不只是堆
-  _st_st=0; _st_sf=0
-  while IFS=' ' read -r _mk _mv _; do
-    case "$_mk" in
-      SwapTotal:) _st_st=$_mv ;;
-      SwapFree:) _st_sf=$_mv; break ;;
-    esac
-  done < /proc/meminfo 2>/dev/null
-  case "$_st_st" in ''|*[!0-9]*) _st_st=0;; esac
-  case "$_st_sf" in ''|*[!0-9]*) _st_sf=0;; esac
-  _st_cpsi="NA"
-  if [ -r /proc/pressure/cpu ]; then
-    IFS=' ' read -r _pc1 _pc2 _ < /proc/pressure/cpu 2>/dev/null
-    case "$_pc2" in avg10=*) _st_cpsi=${_pc2#avg10=} ;; esac
-  fi
-  echo "state=$_st_state pid=${_st_pid:-NA} shield=$_st_shield storm=$_st_storm rogue=$_st_rogue compact=$_st_compact blackbox=$_st_blackbox crash=$_st_crash rollback=$_st_rollback mjburst=$_st_mjburst bt=$_st_bt ssheap=$_st_ssheap flush=$_st_flush gcboost=$_st_gcboost ssprobe=$_st_ssprobe forecast=$_st_forecast bt3=$_st_bt3 avail_kb=$(avail_kb) psi_s10=${P_S10:-NA} psi_f10=${P_F10:-NA} swap_total_kb=$_st_st swap_free_kb=$_st_sf cpu_psi_s10=$_st_cpsi"
+  _st_st=$(awk '/^SwapTotal:/{print $2}' /proc/meminfo 2>/dev/null); _st_st=${_st_st:-0}
+  _st_sf=$(awk '/^SwapFree:/{print $2}' /proc/meminfo 2>/dev/null); _st_sf=${_st_sf:-0}
+  _st_cpsi=$(awk -F'avg10=' '/some/{print $2; exit}' /proc/pressure/cpu 2>/dev/null); _st_cpsi=${_st_cpsi%% *}
+  echo "state=$_st_state pid=${_st_pid:-NA} cam=$_st_cam shield=$_st_shield sc=$_st_sc storm=$_st_storm rogue=$_st_rogue compact=$_st_compact rollback=$_st_rollback crash=$_st_crash ssheap=$_st_ssheap avail_kb=$(avail_kb) psi_s10=${P_S10:-NA} psi_f10=${P_F10:-NA} swap_total_kb=$_st_st swap_free_kb=$_st_sf cpu_psi_s10=${_st_cpsi:-NA}"
 }
 
-# v1.11.0: update_module_desc —— 动态刷新 module.prop description（KSU 管理器卡片简统计）
-# awk 替换 description 行（其余字段原样），写 run/ 临时文件后 mv 原子落位（同文件系统）。
-# 仅写 description 行，version/versionCode 永不触碰（防触发管理器更新误判）。
+# v2.0.1: update_module_desc —— SS堆缺失时明确显示「待采集」，杜绝假安全感
 update_module_desc() {
   [ -f "$MODULE_PROP" ] || return 0
   _cs=$(collect_stats)
-  _state=NA; _pid=NA; _shield=0; _storm=0; _rogue=0; _compact=0; _blackbox=0; _crash=0; _rollback=0; _mjburst=0; _bt=0; _ssheap=NA; _avail=NA; _psis=NA; _psif=NA
+  _state=NA; _pid=NA; _cam=0; _shield=0; _sc=0; _storm=0; _rogue=0; _compact=0; _rollback=0; _crash=0; _ssheap=NA; _avail=NA; _psis=NA; _psif=NA
   for kv in $_cs; do
     k=${kv%%=*}; v=${kv#*=}
     case "$k" in
-      state) _state=$v;; pid) _pid=$v;; shield) _shield=$v;; storm) _storm=$v;;
-      rogue) _rogue=$v;; compact) _compact=$v;; blackbox) _blackbox=$v;;
-      crash) _crash=$v;; rollback) _rollback=$v;; mjburst) _mjburst=$v;; bt) _bt=$v;;
-      ssheap) _ssheap=$v;;
-      avail_kb) _avail=$v;; psi_s10) _psis=$v;; psi_f10) _psif=$v;;
+      state) _state=$v;; pid) _pid=$v;; cam) _cam=$v;; shield) _shield=$v;; sc) _sc=$v;; storm) _storm=$v;;
+      rogue) _rogue=$v;; compact) _compact=$v;; rollback) _rollback=$v;; crash) _crash=$v;;
+      ssheap) _ssheap=$v;; avail_kb) _avail=$v;; psi_s10) _psis=$v;; psi_f10) _psif=$v;;
     esac
   done
   _avgb=$(( ${_avail:-0} / 1024 )) 2>/dev/null || _avgb=NA
-  case "$_ssheap" in ''|*[!0-9]*) _ssheap_m=NA;; *) _ssheap_m=$(( _ssheap / 1024 ));; esac
+  case "$_ssheap" in ''|*[!0-9]*) _ssheap_str="待采集";; *) _ssheap_str="$(( _ssheap / 1024 ))MB";; esac
   _sw=$(awk '/^SwapTotal/{t=$2}/^SwapFree/{f=$2}END{print (t-f)/1024}' /proc/meminfo 2>/dev/null)
   _swi=${_sw%%.*}; case "$_swi" in ''|*[!0-9]*) _swi=NA;; esac
-  _nd="description=RMG MemTonic 内存守护 ($MT_VERSION)｜守护:${_state}(pid ${_pid})｜⚡本日志周期:护航${_shield}·风暴${_storm}·毒瘤降权${_rogue}·压实${_compact}·黑匣子${_blackbox}·崩溃雷达${_crash}·地雷告警${_rollback}·重负载指纹${_mjburst}·蓝牙护航${_bt}｜可用${_avgb}MB·swap${_swi}MB·PSI ${_psis}/${_psif}·SS堆${_ssheap_m}MB｜边界:不杀进程/不冻结/不动zram/不持久内核参数"
+  _nd="description=RMG MemTonic 内存守护 ($MT_VERSION)｜守护:${_state}(pid ${_pid})｜⚡本日志周期:相机${_cam}·护盾${_shield}·截屏${_sc}·风暴${_storm}·熔断${_rogue}·压实${_compact}·回滚${_rollback}·崩溃${_crash}｜可用${_avgb}MB·swap${_swi}MB·PSI ${_psis}/${_psif}·SS堆:${_ssheap_str}｜边界:不杀进程/不冻结/不动zram/不持久内核参数"
+  if [ -x /data/adb/ksud ]; then
+    KSU_MODULE=rmg_memtonic /data/adb/ksud module config set --temp override.description "${_nd#description=}" >/dev/null 2>&1 && return 0
+  fi
   _tmp="$RUN/module.prop.tmp"
   awk -v nd="$_nd" '/^description=/{print nd; next} {print}' "$MODULE_PROP" > "$_tmp" 2>/dev/null || return 0
-  [ -s "$_tmp" ] && mv "$_tmp" "$MODULE_PROP" 2>/dev/null
-  # v1.13.19: KernelSU 的管理器卡片读的是 ksud 覆盖层而非 module.prop，写完文件后再同步一次
-  # override.description，卡片才会立刻反映最新统计。失败静默——module.prop 始终是权威来源，
-  # ksud 缺失或子命令不支持时行为与旧版一致。
-  # v1.13.20: 手动/WebUI 调用时缺失 KSU_MODULE 环境变量会导致 ksud 失败，显式前置注入。
-  if [ -x /data/adb/ksud ]; then
-    KSU_MODULE=rmg_memtonic /data/adb/ksud module config set --temp override.description "${_nd#description=}" >/dev/null 2>&1
+  if [ -s "$_tmp" ]; then
+    mv "$_tmp" "$MODULE_PROP" 2>/dev/null
+    chmod 0644 "$MODULE_PROP" 2>/dev/null
   fi
 }
 
-# v1.9.11: env_baseline —— 启动环境基线（每会话一次，S 级）
-# 2026-10-08 定性修正：max_cached_processes=1030 为三星原生行为
-# （框架内 mCustomizedMaxCachedProcesses=1024 派生），非篡改，只记基线不告警；
-# 真正要防的是 Scene 类模块经 system.prop 注入 ro.lmk.medium / ro.sys.fw.bg_apps_limit
-# 篡改 LMK（2026-09 实测事故源），该检测保留并维持 W 级告警。
 env_baseline() {
-  _lmk=$(getprop ro.lmk.medium 2>/dev/null)
-  _bg=$(getprop ro.sys.fw.bg_apps_limit 2>/dev/null)
-  _wm=$(cat /proc/sys/vm/watermark_scale_factor 2>/dev/null)
-  _mc=$(dumpsys activity settings 2>/dev/null | grep -m1 'max_cached_processes=' | sed 's/.*=//')
-  logx S "baseline max_cached=${_mc:-NA} lmk_medium=${_lmk:-unset} bg_apps_limit=${_bg:-unset} watermark=${_wm:-NA}"
-  if [ -n "$_lmk" ] || [ -n "$_bg" ]; then
-    logx W "warn=props_tampered lmk_medium=${_lmk:-empty} bg_apps_limit=${_bg:-empty} note=LMK属性被外部注入_排查Scene类模块"
-  fi
+  logx S "env_baseline bg_apps_limit=$(getprop ro.sys.fw.bg_apps_limit 2>/dev/null)"
 }
 
-# v1.13.19: is_frozen_pid <pid> —— 零 fork 判定进程是否被 cgroup freezer 冻结。
-# 原理：Android 冻结态（NoActive 等）下任务停在 do_freezer_trap，/proc/<pid>/wchan 即该符号。
-# 用途：削峰/降权循环跳过已冻结进程——改 nice 对冻结任务无意义，解冻瞬间还会带来额外调度。
-# 失败安全：文件不可读或无内容一律返回 1（当作未冻结，按原逻辑处理，只漏优化不误伤）。
 is_frozen_pid() {
-  [ -r "/proc/$1/wchan" ] || return 1
-  _fz_w=""
-  IFS= read -r _fz_w < "/proc/$1/wchan" 2>/dev/null
-  case "$_fz_w" in
-    *do_freezer_trap*) return 0 ;;
-  esac
+  [ -r "/proc/$1/wchan" ] && read -r _w < "/proc/$1/wchan" 2>/dev/null && case "$_w" in *freeze*|*freezer*) return 0;; esac
   return 1
 }
 
-# v1.13.19: shield_fg_restore —— FR-9 护盾提权残留还原。
-# 背景：护盾在 sleep 15 期间若被 kill -9 / 卸载 / 崩溃，内存态 sf_orig/fg_orig/rt_orig
-# 全部丢失，SurfaceFlinger 与前台主线程会永久停在 -15（nice 只提不降，越积越高）。
-# 落盘格式：<kind> <pid/tid> <orig_nice>，kind ∈ sf|fg|rt。启动自愈、stop、uninstall 共用。
 shield_fg_restore() {
   [ -s "$RUN/shield_fg.bak" ] || return 0
   _sfr=0
-  while read -r _sfr_k _sfr_p _sfr_o; do
+  while read -r _sfr_tag _sfr_p _sfr_o; do
     case "$_sfr_p" in ''|*[!0-9]*) continue;; esac
     case "$_sfr_o" in ''|*[!0-9-]*) continue;; esac
     [ -d "/proc/$_sfr_p" ] || continue
@@ -1673,61 +506,34 @@ shield_fg_restore() {
   return 0
 }
 
-# v1.13.19: restore_all_on_exit —— stop / uninstall 共用的唯一清场序列。
-# 由来：v1.13.16 B0 在两处各自补了一部分（B0 补 gc_boost/camera_affinity/affinity 清单），
-# 结果形成"补了 A 漏了 B"的结构性隐患——11-08 审计实测 uninstall.sh 的 pkill 数为 0，
-# cpu_guard / fluency_shield / vk_injector 会在卸载后继续运行且清单被 rm -rf run 删光。
-# 约定：本函数只负责"还原"，不负责"终止进程"；终止由调用方先行完成。
-# 调用前提：已 source mt_lib.sh（uninstall.sh 已满足），$RUN 存在。
+restore_all_rogue() {
+  [ -s "$ROGUE_LST" ] || return 0
+  _rar=0
+  while read -r _rpid _ron _rpkg; do
+    case "$_rpid" in ''|*[!0-9]*) continue;; esac
+    [ -d "/proc/$_rpid" ] || continue
+    _rc=$(nice_of "$_rpid"); case "$_rc" in ''|*[!0-9-]*) continue;; esac
+    [ "$_rc" != "$_ron" ] && renice -n $((_ron - _rc)) -p "$_rpid" >/dev/null 2>&1
+    ionice -c 2 -n 4 -p "$_rpid" 2>/dev/null
+    _rar=$((_rar+1))
+  done < "$ROGUE_LST"
+  rm -f "$ROGUE_LST" 2>/dev/null
+  [ "$_rar" -gt 0 ] && logx I "act=rogue_restore_all restored=$_rar msg=极端CPU降权已全量还原"
+}
+
 restore_all_on_exit() {
   storm_restore_pending manual_stop 2>/dev/null
-  flush_guard_restore               2>/dev/null
-  bt_guard_restore                  2>/dev/null
-  bt2_guard_restore                 2>/dev/null
-  camera_vip_off                    2>/dev/null
-  camera_affinity_off               2>/dev/null
-  gc_boost_off                      2>/dev/null
+  camera_guard_restore              2>/dev/null
   shield_fg_restore                 2>/dev/null
-  # 核亲和约束：v1.13.19 起统一写 cgroup.procs（见 cpu_guard.sh 同名迁移说明）
-  if [ -s "$RUN/affinity_constrained.lst" ]; then
-    while read -r _ra_pid _ra_pkg _ra_orig; do
-      case "$_ra_pid" in ''|*[!0-9]*) continue;; esac
-      case "$_ra_orig" in ''|*[!a-zA-Z0-9_-]*) continue;; esac
-      [ -d "/proc/$_ra_pid" ] || continue
-      echo "$_ra_pid" > "/dev/cpuset/$_ra_orig/cgroup.procs" 2>/dev/null
-    done < "$RUN/affinity_constrained.lst"
-    rm -f "$RUN/affinity_constrained.lst" 2>/dev/null
-  fi
-  # CPU 毒瘤降权
-  if [ -s "$RUN/cpu_rogue_renice.lst" ]; then
-    while read -r _rr_tid _rr_on _rr_pkg; do
-      case "$_rr_tid" in ''|*[!0-9]*) continue;; esac
-      [ -d "/proc/$_rr_tid" ] || continue
-      _rr_cur=$(nice_of "$_rr_tid"); [ -n "$_rr_cur" ] || continue
-      renice -n $((_rr_on - _rr_cur)) -p "$_rr_tid" >/dev/null 2>&1
-    done < "$RUN/cpu_rogue_renice.lst"
-    rm -f "$RUN/cpu_rogue_renice.lst" 2>/dev/null
-  fi
-  # FR-RN1 雷鸟降权：v1.13.19 用默认 IFS 读 Tgid（原 IFS=' ' 不拆 Tab，100% 跳过）
-  if [ -s "$RUN/rayneo_governor.lst" ]; then
-    _ra_rp=$(pidof "$RAYNEO_PKG" 2>/dev/null); _ra_rp=${_ra_rp%% *}
-    while read -r _rr_tid _rr_on _rr_comm; do
-      case "$_rr_tid" in ''|*[!0-9]*) continue;; esac
-      [ -d "/proc/$_rr_tid" ] || continue
-      _rr_tg=""
-      while read -r _rr_k _rr_v _; do
-        [ "$_rr_k" = "Tgid:" ] && { _rr_tg=$_rr_v; break; }
-      done < "/proc/$_rr_tid/status" 2>/dev/null
-      case "$_rr_tg" in ''|*[!0-9]*) continue;; esac
-      { [ -n "$_ra_rp" ] && [ "$_rr_tg" = "$_ra_rp" ]; } || continue
-      _rr_cur=$(nice_of "$_rr_tid"); [ -n "$_rr_cur" ] || continue
-      renice -n $((_rr_on - _rr_cur)) -p "$_rr_tid" >/dev/null 2>&1
-    done < "$RUN/rayneo_governor.lst"
-    rm -f "$RUN/rayneo_governor.lst" "$RUN/rayneo_notified" 2>/dev/null
-  fi
+  restore_all_rogue                 2>/dev/null
+  rm -f "$ROGUE_LST" "$CAMERA_ACTIVE_FLAG" "$SCREENSHOT_ACTIVE_FLAG" "$RUN/screenshot_fg.bak" 2>/dev/null
   return 0
 }
 
-if [ "$(basename "$0")" = "mt_lib.sh" ]; then
-  echo "mt_lib.sh 是公共库，请运行 memtonic.sh"; exit 1
-fi
+# 库文件结尾：严禁在被 . (source) 时执行 exit 1 误杀宿主 shell
+case "$0" in
+  */mt_lib.sh|mt_lib.sh)
+    (return 0 2>/dev/null) || { echo "mt_lib.sh 是公共库，请运行 memtonic.sh"; exit 1; }
+    ;;
+esac
+return 0 2>/dev/null || true

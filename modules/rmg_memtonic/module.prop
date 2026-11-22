@@ -1,6 +1,6 @@
 id=rmg_memtonic
 name=RMG MemTonic 内存与异常守护
-version=v1.13.20
-versionCode=60
+version=v2.0.1
+versionCode=71
 author=deanc
-description=RMG MemTonic 内存守护 (v1.13.20)｜守护:running(pid 5603)｜⚡本日志周期:护航248·风暴1·毒瘤降权0·压实13·黑匣子0·崩溃雷达1·地雷告警0·重负载指纹93·蓝牙护航85｜可用2748MB·swap7992MB·PSI 0/0｜边界:不杀进程/不冻结/不动zram/不持久内核参数
+description=RMG MemTonic 内存守护 (v2.0.1)｜全域无感相机护航+蓝牙消费者平权+双守护架构+零阻塞预警｜边界:不杀进程/不冻结/不动zram/不持久内核参数
