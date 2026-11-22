@@ -30,10 +30,10 @@ MemTonic 是专门配套本临时 Root 环境运行的高性能 KernelSU 模块�
 
 | MemTonic 版本 | 状态 | 核心亮点与适用人群 | 推荐度 |
 |---|---|---|:---:|
-| [`v2.0.1`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v2.0.1) | **正式最新版 (Latest)** | **里程碑升级：KernelSU 3.3.1 深度合规 + 极简双核心架构 + WebUI 8 项统计完全自愈**<br>① **架构精简收敛**：废除 4 个分散子守护，收敛为 `memtonic.sh`（主调度与系统核心守护）与 `fluency_shield.sh`（前台防掉帧护盾）；<br>② **卡片锁定自愈**：解决临时 Root 热刷入产生的孤儿 `update` 锁，修复卡片 Switch 置灰与按钮隐藏通病；<br>③ **WebUI 状态看板完全自愈**：修复 `mt_lib.sh` 在 source 下 `$0` 路径误算历史根因，模块 8 项核心统计实时精准呈现；<br>④ **相机与截屏硬件护航**：打开相机极速绑定骁龙 8 Gen 2 大核（CPU 4-7），彻底杜绝掉帧；截屏哨兵 0-fork 时间戳检测免扰；<br>⑤ **全生命周期零 drop_caches**：彻底移除盲丢缓存逻辑，保护应用热数据。 | 🌟🌟🌟🌟🌟<br>**全员首选** |
-| [`v1.13.20`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.20) | 历史稳定版 | FR-4 毒瘤检测全面恢复与全链路零 fork 极速重构。单次 awk 批量采集，活跃进程一级包名缓存，真机 5 轮扫描稳保 < 300ms 预算。 | 历史存档 |
-| [`v1.13.19`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.19) | 历史版本 | 外部审计 9 项修复：Tgid Tab 分隔符、cpuset 改 `cgroup.procs`、卸载清场补齐、renice 增量语义守卫。 | 历史存档 |
-| [`v1.13.18`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v1.13.18) | 历史版本 | FR-RN1 雷鸟后台治理首次启用 + WebUI 健康分首屏。 | 历史存档 |
+| [`v2.0.1`](https://github.com/deancyl/s9180-RootMyGalaxy-MemTonic/releases/tag/v2.0.1) | **正式最新版 (Latest)** | **里程碑升级：KernelSU 3.3.1 深度合规 + 极简双核心架构 + WebUI 8 项统计完全自愈**<br>① **架构精简收敛**：废除 4 个分散子守护，收敛为 `memtonic.sh`（主调度与系统核心守护）与 `fluency_shield.sh`（前台防掉帧护盾）；<br>② **卡片锁定自愈**：解决临时 Root 热刷入产生的孤儿 `update` 锁，修复卡片 Switch 置灰与按钮隐藏通病；<br>③ **WebUI 状态看板完全自愈**：修复 `mt_lib.sh` 在 source 下 `$0` 路径误算历史根因，模块 8 项核心统计实时精准呈现；<br>④ **相机与截屏硬件护航**：打开相机极速绑定骁龙 8 Gen 2 大核（CPU 4-7），彻底杜绝掉帧；截屏哨兵 0-fork 时间戳检测免扰；<br>⑤ **全生命周期零 drop_caches**：彻底移除盲丢缓存逻辑，保护应用热数据。 | 🌟🌟🌟🌟🌟<br>**全员首选** |
+| [`v1.13.20`](https://github.com/deancyl/s9180-RootMyGalaxy-MemTonic/releases/tag/v1.13.20) | 历史稳定版 | FR-4 毒瘤检测全面恢复与全链路零 fork 极速重构。单次 awk 批量采集，活跃进程一级包名缓存，真机 5 轮扫描稳保 < 300ms 预算。 | 历史存档 |
+| [`v1.13.19`](https://github.com/deancyl/s9180-RootMyGalaxy-MemTonic/releases/tag/v1.13.19) | 历史版本 | 外部审计 9 项修复：Tgid Tab 分隔符、cpuset 改 `cgroup.procs`、卸载清场补齐、renice 增量语义守卫。 | 历史存档 |
+| [`v1.13.18`](https://github.com/deancyl/s9180-RootMyGalaxy-MemTonic/releases/tag/v1.13.18) | 历史版本 | FR-RN1 雷鸟后台治理首次启用 + WebUI 健康分首屏。 | 历史存档 |
 
 ---
 
@@ -41,9 +41,9 @@ MemTonic 是专门配套本临时 Root 环境运行的高性能 KernelSU 模块�
 
 | Release | 说明 | 内嵌 KernelSU 版本 | 适用人群 |
 |---|---|---|---|
-| [`v0.2.36-ksu331`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v0.2.36-ksu331) | **增强变体（官方推荐）** | 内嵌 **KernelSU v3.3.1 (32680)** | 配套最新 KernelSU Manager v3.3.1 使用（强烈推荐） |
-| [`v0.2.36-ksu330`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v0.2.36-ksu330) | 增强变体 | 内嵌 KernelSU v3.3.0 (32601) | 需要上一代 KSU 驱动环境者 |
-| [`v0.2.36-fzg1`](https://github.com/deancyl/s9180-rootmygalaxy/releases/tag/v0.2.36-fzg1) | 原版基线 | 内嵌 KernelSU v3.2.5 | 仅供基线对比 |
+| [`v0.2.36-ksu331`](https://github.com/deancyl/s9180-RootMyGalaxy-MemTonic/releases/tag/v0.2.36-ksu331) | **增强变体（官方推荐）** | 内嵌 **KernelSU v3.3.1 (32680)** | 配套最新 KernelSU Manager v3.3.1 使用（强烈推荐） |
+| [`v0.2.36-ksu330`](https://github.com/deancyl/s9180-RootMyGalaxy-MemTonic/releases/tag/v0.2.36-ksu330) | 增强变体 | 内嵌 KernelSU v3.3.0 (32601) | 需要上一代 KSU 驱动环境者 |
+| [`v0.2.36-fzg1`](https://github.com/deancyl/s9180-RootMyGalaxy-MemTonic/releases/tag/v0.2.36-fzg1) | 原版基线 | 内嵌 KernelSU v3.2.5 | 仅供基线对比 |
 
 ---
 
