@@ -1,6 +1,6 @@
 id=rmg_memtonic
 name=RMG MemTonic 内存与异常守护
-version=v2.0.1
-versionCode=71
+version=v2.0.3
+versionCode=73
 author=deanc
-description=RMG MemTonic 内存守护 (v2.0.1)｜全域无感相机护航+蓝牙消费者平权+双守护架构+零阻塞预警｜边界:不杀进程/不冻结/不动zram/不持久内核参数
+description=RMG MemTonic 内存守护 (v2.0.3)｜修复真机背光判定恢复全域护航+PerfHAL耗尽自愈+夜间息屏碎片整理｜边界:不杀进程/不冻结/不动zram/不持久内核参数

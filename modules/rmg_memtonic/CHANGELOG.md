@@ -1,3 +1,29 @@
+## [v2.0.3] - 2026-11-25 (versionCode=73, vc73)
+
+### 34.5 小时卡顿真机审计与精准修复
+- **修复 `screen_off()` 误缓存假背光节点导致亮屏护航 100% 瘫痪（P0 级 Bug）**：
+  - **真机实证纠偏**：在 `SM-S9180` 上 `/sys/class/backlight/panel/brightness`（`max_brightness=0`）亮屏仍恒返回 `0`，真实 AMOLED 亮度节点为 `/sys/class/backlight/panel0-backlight/brightness`（`max_brightness=612`）。`v2.0.2` 通配符按字典序先命中并缓存了 `panel/brightness`，导致 `memtonic.sh` 全程走 300s 息屏节拍、`fluency_shield.sh` 全程 `sleep 20` 短路。
+  - **修复实现**：`mt_lib.sh` 的 `screen_off()` 优先探测 `panel0-backlight/brightness` 并硬性校验 `max_brightness > 0`（从根上淘汰虚节点，防止息屏启动误缓存），再叠加 `dumpsys power` 首次交叉防呆并打点 `event=screen_off_probe`。
+- **新增高通 PerfHAL Perflock 请求池耗尽哨兵与息屏温和自愈（`memtonic.sh`）**：
+  - 每 30 分钟巡检 `logcat -b main` 中 `ANDR-PERF-MPCTL` `Perflock Submit request limit reached` 增量报错（采用状态文件时间戳去重，避免环形缓冲区旧日志重复误报）。
+  - 增量命中 `>=3` 次时记录 `warn=perflock_exhausted` 并发送 6 小时冷却通知；若恰好处于 `screen_off` 且距上次重建 `>=6h`，平滑执行 `stop perf-hal-2-3 && start perf-hal-2-3`（`killall` 兜底），校验新 PID 存活后落 `act=perfhal_recycled`。
+- **修复夜间深度息屏碎片整理死条件（`memtonic.sh` / `mt_lib.sh` / `webroot/index.html`）**：
+  - 废除原先要求息屏且 `mem PSI >= 15%` 与 `MemFree >= 800MB` 的不可达组合；改为连续息屏 `>=30min` + 冷却 `>=6h` +（`compact_fail` 增量 `>=500` 或触发 `kswapd_growth`）+ `SwapUsed >= 4GB` + `MemFree >= 256MB` 且 `MemAvailable >= 1.5GB` 时执行单次 `compact_memory`（落 `act=idle_compact`，全程零 `drop_caches`）。
+  - `collect_stats()` 恢复 `compact` 统计字段，对齐 WebUI 第 8 张「息屏整理」卡片与版本串至 `v2.0.3 (vc73)`。
+
+---
+
+## [v2.0.2] - 2026-11-23 (versionCode=72, vc72)
+
+### 外部审计精修 (External Audit Refinement)
+- **Dropbox 假崩溃彻底消除**：检测目录时间戳比对 `-nt "$DROPBOX_STATE"`，当目录更新时仅匹配 `system_server_crash`、`system_server_watchdog`、`system_server_anr`、`SYSTEM_TOMBSTONE`、`system_app_anr` 严重崩溃事件，将最新命中文件名写入 `msg=`，最后再 `touch "$DROPBOX_STATE"`；消除日常 `storage_trim`、`SYSTEM_AUDIT` 引起的 36 次误报。
+- **camera_guard_restore 假退出消除**：前置增加 `[ -f "$CAMERA_ACTIVE_FLAG" ]` 校验，未激活时静默清理临时文件直接返回，消除守护重启与清场时的 7 次多余日志。
+- **capture_incident 取证增强**：在现场快照中追加 `logcat -b crash -d -t 60` 崩溃堆栈与最新 8 个 Dropbox 严重事件文件名，秒级分辨软重启诱因。
+- **亮屏 0-fork 缓存与护盾 30s 冷却**：`screen_off()` 首次命中可读亮度节点后直接全局缓存复用；前台护盾提权还原后严格单调冷却 30 秒。
+- **清理描述残留字段**：移除 `update_module_desc()` 与 `collect_stats()` 中废弃的 `·压实` 字段。
+
+---
+
 ## [v2.0.1] - 2026-11-21 (versionCode=71, vc71)
 ### 缺陷修复 (Bug Fixes)
 - **修复 FR-9 前台护盾误提权 `com.samsung.SMT`（P0 级 Bug）**：在 `get_top_app_info` 中增加 `oom_score_adj == 0` 零 fork 校验，并排除系统常驻绑定服务（`com.samsung.SMT`、`com.google.android.tts`、`com.samsung.android.honeyboard` 等），彻底确保 100% 命中真实前台 App。

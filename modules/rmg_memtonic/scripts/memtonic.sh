@@ -1,13 +1,11 @@
 #!/system/bin/sh
-# memtonic.sh —— RMG MemTonic v2.0.1（SM-S9180 内存与异常主守护）
+# memtonic.sh —— RMG MemTonic v2.0.3（SM-S9180 内存与异常主守护）
 #
-# v2.0.1 闭环与省电重构：
-# 1. 主循环改为亮屏 60s / 息屏 300s 零 fork 轻节拍调度；
-# 2. 补齐软重启检测、黑匣子快照、无障碍自愈备份与风暴窗口；
-# 3. 补齐 Dropbox 崩溃感知 (目录时间戳 0-fork 比对)；
-# 4. 补齐极端 CPU+IO 熔断器 (每 3 分钟扫描，非白名单/非前台 >=150% CPU 且无缺页让步)；
-# 5. 补齐 system_server 纯 Java 堆只读预警 (每 30 分钟采集，连续 2 次 >=440MB 预警)；
-# 6. 彻底移除 once/optimize 中残余的 drop_caches，保持全周期零 drop_caches。
+# v2.0.3 审计修复与闭环加固：
+# 1. 修复 screen_off() 背光节点盲缓存回归（prioritize panel0-backlight + max_brightness>0 + dumpsys 交叉验证）；
+# 2. 新增高通 PerfHAL Perflock 请求池耗尽哨兵与息屏平滑重建 (perf-hal-2-3 + 时间戳去重 + 6h 冷却)；
+# 3. 修复夜间深度息屏碎片规整条件（连续息屏>=30min + 冷却>=6h + compact_fail/kswapd_growth + Swap>=4GB + MemFree>=256MB & MemAvailable>=1.5GB）；
+# 4. 严格维持全生命周期零 drop_caches、零杀进程、零改写 CPU 频率红线。
 
 _mt_self_dir=${0%/*}
 [ "$_mt_self_dir" = "$0" ] && _mt_self_dir="/data/adb/modules/rmg_memtonic/scripts"
@@ -17,9 +15,11 @@ else
   . "/data/adb/modules/rmg_memtonic/scripts/mt_lib.sh"
 fi
 
-# maintenance <标签>：执行一轮内存按需压实（仅息屏且有高压力时）
+# maintenance <标签>：执行一轮内存按需压实（仅息屏且满足物理空闲底线时）
+_MAINT_DID_COMPACT=0
 maintenance() {
   tag=$1
+  _MAINT_DID_COMPACT=0
   if [ -f "$CAMERA_ACTIVE_FLAG" ]; then
     logx W "[$tag] 拒绝执行：相机活跃中，严禁内存压实防录像掉帧"
     return 1
@@ -32,10 +32,12 @@ maintenance() {
     logx W "[$tag] 拒绝执行：屏幕处于亮屏/交互状态，严禁内存压实防掉帧"
     return 1
   fi
-  _mf_free=$(awk '/MemFree/{print $2+0; exit}' /proc/meminfo 2>/dev/null)
+  _mf_free=$(awk '/^MemFree:/{print $2+0; exit}' /proc/meminfo 2>/dev/null)
+  _mf_avail=$(awk '/^MemAvailable:/{print $2+0; exit}' /proc/meminfo 2>/dev/null)
   case "$_mf_free" in ''|*[!0-9]*) _mf_free=0;; esac
-  if [ "$_mf_free" -lt 819200 ]; then
-    logx S "[$tag] 跳过息屏压实 free_kb=$_mf_free < 800MB msg=物理空闲不足_防高失败率规整停顿"
+  case "$_mf_avail" in ''|*[!0-9]*) _mf_avail=0;; esac
+  if [ "$_mf_free" -lt 262144 ] || [ "$_mf_avail" -lt 1572864 ]; then
+    logx S "[$tag] 跳过息屏压实 free_kb=$_mf_free avail_kb=$_mf_avail msg=物理空闲低于256MB或可用低于1.5GB_防高失败率规整停顿"
     return 0
   fi
   if ! mkdir "$LOCK" 2>/dev/null; then
@@ -48,14 +50,113 @@ maintenance() {
     mkdir "$LOCK" 2>/dev/null || { log "[$tag] 无法获取锁"; return 1; }
   fi
   echo $$ > "$LOCK/pid"
-  log "[$tag] 开始 avail=$(avail_kb)KB psi_mem=$(psi_val memory some)"
+  log "[$tag] 开始 free=${_mf_free}KB avail=${_mf_avail}KB psi_mem=$(psi_val memory some)"
   if echo 1 > /proc/sys/vm/compact_memory 2>/dev/null; then
+    _MAINT_DID_COMPACT=1
     log "[$tag] 内存压实完成"
   else
     log "[$tag] 内存压实失败"
   fi
   log "[$tag] 结束 avail=$(avail_kb)KB"
   rm -rf "$LOCK" 2>/dev/null
+}
+
+compact_fail_now() {
+  awk '/^compact_fail /{print $2+0; exit}' /proc/vmstat 2>/dev/null
+}
+
+perfhal_sentinel() {
+  _ph_now=$1
+  _ph_since=""
+  [ -r "$PERFHAL_TS_FILE" ] && IFS= read -r _ph_since < "$PERFHAL_TS_FILE" 2>/dev/null
+  if [ -n "$_ph_since" ]; then
+    _ph_lines=$(logcat -b main -d -v time,year -s ANDR-PERF-MPCTL:E -T "$_ph_since" 2>/dev/null)
+  else
+    _ph_lines=$(logcat -b main -d -v time,year -s ANDR-PERF-MPCTL:E -t 200 2>/dev/null)
+  fi
+  _ph_res=$(printf '%s\n' "$_ph_lines" | awk -v since="$_ph_since" '
+    /Perflock Submit request limit reached/ {
+      ts = $1 " " $2
+      if (since == "" || ts > since) {
+        cnt++
+        last_ts = ts
+      }
+    }
+    END { print cnt+0, last_ts }
+  ')
+  _ph_cnt=${_ph_res%% *}
+  _ph_last=${_ph_res#* }
+  [ "$_ph_last" = "$_ph_res" ] && _ph_last=""
+  [ -n "$_ph_last" ] && echo "$_ph_last" > "$PERFHAL_TS_FILE" 2>/dev/null
+
+  [ "$_ph_cnt" -ge 3 ] || return 0
+  logx W "warn=perflock_exhausted count=$_ph_cnt msg=高通PerfHAL请求池耗尽_交互提频失效"
+
+  _ph_alert_last=0
+  [ -r "$PERFHAL_ALERT_TS" ] && IFS= read -r _ph_alert_last < "$PERFHAL_ALERT_TS" 2>/dev/null
+  case "$_ph_alert_last" in ''|*[!0-9]*) _ph_alert_last=0;; esac
+  [ "$_ph_now" -lt "$_ph_alert_last" ] && _ph_alert_last=0
+  if [ $((_ph_now - _ph_alert_last)) -ge 21600 ]; then
+    echo "$_ph_now" > "$PERFHAL_ALERT_TS" 2>/dev/null
+    notify_alert perfhal "MemTonic: 高通 PerfHAL Perflock 请求池耗尽(${_ph_cnt}次)，交互提频已失效，息屏后将自动温和重建"
+  fi
+
+  if screen_off; then
+    _ph_rec_last=0
+    [ -r "$PERFHAL_RECYCLE_TS" ] && IFS= read -r _ph_rec_last < "$PERFHAL_RECYCLE_TS" 2>/dev/null
+    case "$_ph_rec_last" in ''|*[!0-9]*) _ph_rec_last=0;; esac
+    [ "$_ph_now" -lt "$_ph_rec_last" ] && _ph_rec_last=0
+    if [ $((_ph_now - _ph_rec_last)) -ge 21600 ]; then
+      _old_phpid=$(pidof vendor.qti.hardware.perf-hal-service 2>/dev/null); _old_phpid=${_old_phpid%% *}
+      stop perf-hal-2-3 >/dev/null 2>&1
+      sleep 1
+      start perf-hal-2-3 >/dev/null 2>&1
+      sleep 1
+      _new_phpid=$(pidof vendor.qti.hardware.perf-hal-service 2>/dev/null); _new_phpid=${_new_phpid%% *}
+      if [ -z "$_new_phpid" ] || [ "$_new_phpid" = "$_old_phpid" ]; then
+        killall vendor.qti.hardware.perf-hal-service >/dev/null 2>&1
+        sleep 2
+        _new_phpid=$(pidof vendor.qti.hardware.perf-hal-service 2>/dev/null); _new_phpid=${_new_phpid%% *}
+      fi
+      if [ -n "$_new_phpid" ] && [ "$_new_phpid" != "$_old_phpid" ]; then
+        echo "$_ph_now" > "$PERFHAL_RECYCLE_TS" 2>/dev/null
+        date '+%Y-%m-%d %H:%M:%S.000' > "$PERFHAL_TS_FILE" 2>/dev/null
+        logx A "act=perfhal_recycled old_pid=${_old_phpid:-NA} new_pid=$_new_phpid msg=息屏温和重建PerfHAL释放请求池"
+      fi
+    fi
+  fi
+  return 0
+}
+
+idle_compact_maybe() {
+  _ic_now=$1
+  screen_off || return 0
+  [ ! -f "$CAMERA_ACTIVE_FLAG" ] && [ ! -f "$SCREENSHOT_ACTIVE_FLAG" ] && [ ! -d "$STORM_FLAG" ] || return 0
+  [ "${_sc_off_since:-0}" -gt 0 ] && [ $((_ic_now - _sc_off_since)) -ge 1800 ] || return 0
+  [ $((_ic_now - last_compact_ts)) -ge 21600 ] || return 0
+
+  _ic_cf_now=$(compact_fail_now)
+  case "$_ic_cf_now" in ''|*[!0-9]*) _ic_cf_now=0;; esac
+  _ic_cf_delta=$((_ic_cf_now - ${last_compact_fail:-0}))
+  [ "$_ic_cf_delta" -lt 0 ] && _ic_cf_delta=0
+  if [ "$_ic_cf_delta" -lt 500 ] && [ "${kswapd_growth_seen:-0}" -eq 0 ]; then
+    return 0
+  fi
+
+  _ic_sw=$(awk '/^SwapTotal/{t=$2}/^SwapFree/{f=$2}END{print t-f}' /proc/meminfo 2>/dev/null)
+  case "$_ic_sw" in ''|*[!0-9]*) _ic_sw=0;; esac
+  [ "$_ic_sw" -ge 4194304 ] || return 0
+
+  maintenance on_demand_pressure
+  if [ "${_MAINT_DID_COMPACT:-0}" -eq 1 ]; then
+    last_compact_ts=$_ic_now
+    _ic_cf_after=$(compact_fail_now)
+    case "$_ic_cf_after" in ''|*[!0-9]*) _ic_cf_after=$_ic_cf_now;; esac
+    last_compact_fail=$_ic_cf_after
+    kswapd_growth_seen=0
+    logx A "act=idle_compact compact_fail_delta=$_ic_cf_delta swap_kb=$_ic_sw avail_kb=$(avail_kb)"
+    update_module_desc
+  fi
 }
 
 # scan_extreme_rogue: 高门槛极端 CPU+IO 熔断器
@@ -318,18 +419,35 @@ last_ss_probe_ts=$_init_ts
 last_rogue_ts=$_init_ts
 last_rogue_scan_ts=$_init_ts
 last_compact_ts=0
+last_compact_fail=$(compact_fail_now)
+case "$last_compact_fail" in ''|*[!0-9]*) last_compact_fail=0;; esac
+kswapd_growth_seen=0
+_sc_off_since=0
 last_kswapd_cpu=0
 ss_heap_high_count=0
 last_tick=""
 
 last_sspid=$(pidof system_server 2>/dev/null); last_sspid=${last_sspid%% *}
 touch "$DROPBOX_STATE" 2>/dev/null
+_cur_boot_id=""
+[ -r /proc/sys/kernel/random/boot_id ] && IFS= read -r _cur_boot_id < /proc/sys/kernel/random/boot_id 2>/dev/null
+_prev_boot_id=""
+[ -r "$RUN/boot_id.state" ] && IFS= read -r _prev_boot_id < "$RUN/boot_id.state" 2>/dev/null
+if [ -n "$_cur_boot_id" ] && [ "$_cur_boot_id" != "$_prev_boot_id" ]; then
+  echo "$_cur_boot_id" > "$RUN/boot_id.state" 2>/dev/null
+  rm -f "$PERFHAL_RECYCLE_TS" "$PERFHAL_ALERT_TS" "$PERFHAL_TS_FILE" 2>/dev/null
+fi
+[ -s "$PERFHAL_TS_FILE" ] || date '+%Y-%m-%d %H:%M:%S.000' > "$PERFHAL_TS_FILE" 2>/dev/null
 
 # 主循环：亮屏 60 秒 / 息屏 300 秒零 fork 轻节拍
 while true; do
+  IFS='. ' read -r _loop_ts _ < /proc/uptime 2>/dev/null
+  case "$_loop_ts" in ''|*[!0-9]*) _loop_ts=$(date +%s);; esac
   if screen_off; then
+    [ "${_sc_off_since:-0}" -eq 0 ] && _sc_off_since=$_loop_ts
     sleep 300
   else
+    _sc_off_since=0
     sleep 60
   fi
 
@@ -370,14 +488,23 @@ while true; do
     [ -n "$_cur_ss" ] && last_sspid=$_cur_ss
   fi
 
-  # b. Dropbox 崩溃感知（零 fork 目录时间戳比对）
+  # b. Dropbox 崩溃感知（目录时间戳 0-fork 比对 + 严重崩溃白名单过滤）
   if [ -d "/data/system/dropbox" ]; then
     if [ ! -f "$DROPBOX_STATE" ]; then
       touch "$DROPBOX_STATE" 2>/dev/null
     elif [ "/data/system/dropbox" -nt "$DROPBOX_STATE" ]; then
+      _hit_file=""
+      for _f in $(ls -t /data/system/dropbox 2>/dev/null | grep -E '^(system_server_crash|system_server_watchdog|system_server_anr|SYSTEM_TOMBSTONE|system_app_anr)' | head -n 10); do
+        if [ "/data/system/dropbox/$_f" -nt "$DROPBOX_STATE" ]; then
+          _hit_file="$_f"
+          break
+        fi
+      done
+      if [ -n "$_hit_file" ]; then
+        logx E "event=crash_detected msg=Dropbox严重事件_${_hit_file}"
+        update_module_desc
+      fi
       touch "$DROPBOX_STATE" 2>/dev/null
-      logx E "event=crash_detected msg=Dropbox目录更新_捕获新系统事件或崩溃"
-      update_module_desc
     fi
   fi
 
@@ -427,6 +554,7 @@ while true; do
       fi
       check_staged_rollback
       check_rollback_disarm
+      perfhal_sentinel "$now_s"
     fi
   fi
 
@@ -448,6 +576,7 @@ while true; do
         ks_delta=$((new_kswapd_cpu - last_kswapd_cpu))
         logx S "health_snap avail_kb=$(avail_kb) swap_used=${sw}KB psi_cpu=$(psi_val cpu some) psi_mem=$(psi_val memory some) psi_io=$(psi_val io some) kswapd_pid=$ks_pid kswapd_delta_ms=$ks_delta"
         if [ "$ks_delta" -ge 90000 ]; then
+          kswapd_growth_seen=1
           logx W "warn=kswapd_growth delta_ms=$ks_delta msg=换页风暴实锤_严禁亮屏压实防allocstall"
         fi
       else
@@ -467,13 +596,6 @@ while true; do
     log "[tick] 存活检查 avail=$(avail_kb)KB"
   fi
 
-  # 息屏纯按需压实（息屏 + 高 PSI 压力 + 3600s 冷却）
-  if screen_off; then
-    if psi_mem_pressure_high; then
-      if [ $((now_s - last_compact_ts)) -ge 3600 ]; then
-        last_compact_ts=$now_s
-        maintenance on_demand_pressure
-      fi
-    fi
-  fi
+  # 息屏深度碎片整理（连续息屏>=30min + 冷却>=6h + 碎片/换页承压 + Swap>=4GB + 物理空闲门槛）
+  idle_compact_maybe "$now_s"
 done

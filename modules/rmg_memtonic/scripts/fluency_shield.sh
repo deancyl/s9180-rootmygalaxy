@@ -1,7 +1,7 @@
 #!/system/bin/sh
-# fluency_shield.sh —— RMG MemTonic v2.0.1 前台护盾 (FR-9) + Universal Camera Guard + Screenshot Sentinel
+# fluency_shield.sh —— RMG MemTonic v2.0.3 前台护盾 (FR-9) + Universal Camera Guard + Screenshot Sentinel
 #
-# v2.0.1 极速省电与闭环重构：
+# v2.0.2 极速省电与闭环重构：
 # 1. 0-fork 单调秒：IFS='. ' read -r _tick_ts _ < /proc/uptime 彻底替代 date +%s；
 # 2. 息屏短路休眠：息屏且无相机/无护盾/无截屏时 sleep 20 深度休眠，跳过全量轮询；
 # 3. 截屏哨兵 0-fork 时间戳比对：[ "$sc_dir" -nt "$RUN/sc_dir.ref" ]，消除每 5s 穿透 FUSE 扫盘；
@@ -281,7 +281,10 @@ while true; do
     rm -f "$RUN/shield_fg.bak" 2>/dev/null
 
     is_boosting=0
-    shield_cooldown_until=$((_tick_ts + 60))
+    _now_ts=0
+    IFS='. ' read -r _now_ts _ < /proc/uptime 2>/dev/null
+    case "$_now_ts" in ''|*[!0-9]*) _now_ts=$_tick_ts;; esac
+    shield_cooldown_until=$((_now_ts + 30))
   fi
 done
 

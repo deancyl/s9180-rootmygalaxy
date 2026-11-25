@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# service.sh —— RMG MemTonic v2.0.1
+# service.sh —— RMG MemTonic v2.0.3
 # 由 ksud 在每次临时 root 会话建立时自动调用，负责拉起 memtonic 守护循环
 # （护栏子进程 storm_guard.sh 由守护自身拉起，本脚本无需关心）。
 # 幂等性：已存在存活实例时不重复启动。

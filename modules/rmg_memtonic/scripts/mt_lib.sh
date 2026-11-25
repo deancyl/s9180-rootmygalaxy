@@ -1,8 +1,8 @@
 #!/system/bin/sh
-# mt_lib.sh —— RMG MemTonic 公共函数库 (v2.0.1)
-MT_VERSION="v2.0.1"
+# mt_lib.sh —— RMG MemTonic 公共函数库 (v2.0.3)
+MT_VERSION="v2.0.3"
 
-# v2.0.1: 规范路径解析——被 . (source) 调用时 $0 常为 sh 或 /system/bin/sh，
+# v2.0.2: 规范路径解析——被 . (source) 调用时 $0 常为 sh 或 /system/bin/sh，
 # 严禁盲信 ${0%/*} 导致 MODDIR 退化为 /system/bin！
 _mt_resolve_moddir() {
   case "$0" in
@@ -52,6 +52,9 @@ RLST=/data/local/tmp/memtonic_storm_renice.lst
 ROGUE_LST=$RUN/cpu_rogue_renice.lst
 DROPBOX=/data/system/dropbox
 DROPBOX_STATE=$RUN/dropbox_state.txt
+PERFHAL_TS_FILE=$RUN/perfhal_log_ts.txt
+PERFHAL_RECYCLE_TS=$RUN/perfhal_recycle.ts
+PERFHAL_ALERT_TS=$RUN/perfhal_alert.ts
 
 CHECK_INTERVAL=60
 STORM_WINDOW=180
@@ -105,16 +108,68 @@ alive() {
   [ -d "/proc/$_pid" ] && grep -q memtonic "/proc/$_pid/cmdline" 2>/dev/null
 }
 
-screen_off() {
-  if [ -r /sys/class/backlight/panel0-backlight/brightness ]; then
-    _bl=""; IFS= read -r _bl < /sys/class/backlight/panel0-backlight/brightness 2>/dev/null
-    case "$_bl" in 0) return 0;; ''|*[!0-9]*) ;; *) return 1;; esac
-  fi
+_CACHED_BL_NODE=""
+_BL_PROBE_LOGGED=0
+
+_dumpsys_screen_off() {
   dumpsys power 2>/dev/null | awk '
     /mHoldingDisplaySuspendBlocker=(false|true)/ { blk = ($0 ~ /false/) ? 1 : 0 }
     /mWakefulness=(Awake|Asleep|Dozing)/ { wake = ($0 ~ /(Asleep|Dozing)/) ? 1 : 0 }
     END { if (blk == 1 && wake == 1) exit 0; else exit 1; }
   '
+}
+
+_bl_node_has_valid_max() {
+  _mb_path="${1%/*}/max_brightness"
+  [ -r "$_mb_path" ] || return 0
+  _mb_val=""
+  IFS= read -r _mb_val < "$_mb_path" 2>/dev/null
+  case "$_mb_val" in
+    ''|*[!0-9]*) return 1;;
+    0) return 1;;
+    *) return 0;;
+  esac
+}
+
+screen_off() {
+  if [ -n "$_CACHED_BL_NODE" ] && [ -r "$_CACHED_BL_NODE" ]; then
+    _bl=""; IFS= read -r _bl < "$_CACHED_BL_NODE" 2>/dev/null
+    case "$_bl" in
+      0) return 0;;
+      ''|*[!0-9]*) ;;
+      *) return 1;;
+    esac
+  fi
+
+  for _node in /sys/class/backlight/panel0-backlight/brightness /sys/class/backlight/*/brightness /sys/class/leds/*backlight*/brightness; do
+    [ -r "$_node" ] || continue
+    _bl_node_has_valid_max "$_node" || continue
+    _bl=""; IFS= read -r _bl < "$_node" 2>/dev/null
+    case "$_bl" in
+      0)
+        if _dumpsys_screen_off; then
+          _CACHED_BL_NODE="$_node"
+          if [ "$_BL_PROBE_LOGGED" -eq 0 ]; then
+            _BL_PROBE_LOGGED=1
+            logx I "event=screen_off_probe pid=$$ node=$_CACHED_BL_NODE bl=0 wake=Off"
+          fi
+          return 0
+        fi
+        # Node reads 0 while dumpsys power reports Awake: fake node, never cache
+        ;;
+      ''|*[!0-9]*) ;;
+      *)
+        _CACHED_BL_NODE="$_node"
+        if [ "$_BL_PROBE_LOGGED" -eq 0 ]; then
+          _BL_PROBE_LOGGED=1
+          logx I "event=screen_off_probe pid=$$ node=$_CACHED_BL_NODE bl=$_bl wake=Awake"
+        fi
+        return 1
+        ;;
+    esac
+  done
+
+  _dumpsys_screen_off
 }
 
 psi_mem_pressure_high() {
@@ -166,7 +221,7 @@ apply_rogue_mitigation() {
   logx W "act=rogue_ionice pid=$_arm_pid pkg=$_arm_pkg msg=后台极端占用_施加renice10与Idle_IO"
 }
 
-# v2.0.1 P0 修复：get_top_app_info 严格校验 Uid>=10000 与 oom_score_adj == 0，排除系统常驻绑定服务与Root子服务
+# v2.0.2 P0 修复：get_top_app_info 严格校验 Uid>=10000 与 oom_score_adj == 0，排除系统常驻绑定服务与Root子服务
 get_top_app_info() {
   _top_file=""
   if [ -r /dev/cpuset/top-app/cgroup.procs ]; then _top_file=/dev/cpuset/top-app/cgroup.procs
@@ -243,6 +298,8 @@ capture_incident() {
     echo "--- PSI ---" && cat /proc/pressure/cpu /proc/pressure/memory /proc/pressure/io 2>/dev/null
     echo "--- ROLLBACK ACTIVE ---" && dumpsys rollback 2>/dev/null | grep -E '(enabling|committed)'
     echo "--- TOP 20 ---" && top -b -n 1 -m 20 2>/dev/null
+    echo "--- CRASH LOGCAT ---" && logcat -b crash -d -t 60 2>/dev/null
+    echo "--- RECENT DROPBOX ---" && ls -t /data/system/dropbox 2>/dev/null | grep -E 'crash|watchdog|anr|tombstone' | head -n 8
     echo "--- MEMTONIC LOG TAIL ---" && tail -c 65536 "$LOG" 2>/dev/null
   ) > "$_inc_file" 2>&1 &
   logx E "event=incident_snapshot path=$_inc_file reason=$1"
@@ -321,6 +378,10 @@ storm_window() {
 }
 
 camera_guard_restore() {
+  if [ ! -f "$CAMERA_ACTIVE_FLAG" ]; then
+    rm -f "$CAMERA_VIP_BAK" "$CAMERA_AFF_BAK" 2>/dev/null
+    return 0
+  fi
   _cgp=$(pidof vendor.samsung.hardware.camera.provider-service_64 2>/dev/null); _cgp=${_cgp%% *}
   [ -n "$_cgp" ] && ionice -c 2 -n 4 -p "$_cgp" 2>/dev/null
   rm -f "$CAMERA_ACTIVE_FLAG" "$CAMERA_VIP_BAK" "$CAMERA_AFF_BAK" 2>/dev/null
@@ -433,15 +494,15 @@ collect_stats() {
     /act=screenshot_boost/ || /act=screenshot_sentinel_on/ {sc++}
     /event=storm_start/ {st++}
     /event=cpu_rogue_intervene/ || /event=cpu_extreme_intervene/ || /act=rogue_ionice/ {ro++}
-    (index($0,"内存压实完成")>0) || (/act=fg_compact/ && /result=ok/) {cp++}
+    /act=idle_compact/ || /内存压实完成/ {cmp++}
     /event=rollback_disarm/ || /warn=staged_rollback/ {rb++}
     /event=crash_detected/ || /act=mem_blackbox/ {cr++}
-    END { print cam+0, sh+0, sc+0, st+0, ro+0, cp+0, rb+0, cr+0 }
+    END { print cam+0, sh+0, sc+0, st+0, ro+0, cmp+0, rb+0, cr+0 }
   ' "$LOG" 2>/dev/null)
   set -- $_st_cnt
   _st_cam=${1:-0}; _st_shield=${2:-0}; _st_sc=${3:-0}; _st_storm=${4:-0}
-  _st_rogue=${5:-0}; _st_compact=${6:-0}; _st_rollback=${7:-0}; _st_crash=${8:-0}
-  for _k in _st_cam _st_shield _st_sc _st_storm _st_rogue _st_compact _st_rollback _st_crash; do
+  _st_rogue=${5:-0}; _st_cmp=${6:-0}; _st_rollback=${7:-0}; _st_crash=${8:-0}
+  for _k in _st_cam _st_shield _st_sc _st_storm _st_rogue _st_cmp _st_rollback _st_crash; do
     eval "v=\$$_k"; case "$v" in ''|*[!0-9]*) eval "$_k=0";; esac
   done
   psi_mem_read || P_S10=NA P_F10=NA
@@ -449,19 +510,19 @@ collect_stats() {
   _st_st=$(awk '/^SwapTotal:/{print $2}' /proc/meminfo 2>/dev/null); _st_st=${_st_st:-0}
   _st_sf=$(awk '/^SwapFree:/{print $2}' /proc/meminfo 2>/dev/null); _st_sf=${_st_sf:-0}
   _st_cpsi=$(awk -F'avg10=' '/some/{print $2; exit}' /proc/pressure/cpu 2>/dev/null); _st_cpsi=${_st_cpsi%% *}
-  echo "state=$_st_state pid=${_st_pid:-NA} cam=$_st_cam shield=$_st_shield sc=$_st_sc storm=$_st_storm rogue=$_st_rogue compact=$_st_compact rollback=$_st_rollback crash=$_st_crash ssheap=$_st_ssheap avail_kb=$(avail_kb) psi_s10=${P_S10:-NA} psi_f10=${P_F10:-NA} swap_total_kb=$_st_st swap_free_kb=$_st_sf cpu_psi_s10=${_st_cpsi:-NA}"
+  echo "state=$_st_state pid=${_st_pid:-NA} cam=$_st_cam shield=$_st_shield sc=$_st_sc storm=$_st_storm rogue=$_st_rogue compact=$_st_cmp rollback=$_st_rollback crash=$_st_crash ssheap=$_st_ssheap avail_kb=$(avail_kb) psi_s10=${P_S10:-NA} psi_f10=${P_F10:-NA} swap_total_kb=$_st_st swap_free_kb=$_st_sf cpu_psi_s10=${_st_cpsi:-NA}"
 }
 
-# v2.0.1: update_module_desc —— SS堆缺失时明确显示「待采集」，杜绝假安全感
+# v2.0.2: update_module_desc —— SS堆缺失时明确显示「待采集」，清理废弃压实字段
 update_module_desc() {
   [ -f "$MODULE_PROP" ] || return 0
   _cs=$(collect_stats)
-  _state=NA; _pid=NA; _cam=0; _shield=0; _sc=0; _storm=0; _rogue=0; _compact=0; _rollback=0; _crash=0; _ssheap=NA; _avail=NA; _psis=NA; _psif=NA
+  _state=NA; _pid=NA; _cam=0; _shield=0; _sc=0; _storm=0; _rogue=0; _rollback=0; _crash=0; _ssheap=NA; _avail=NA; _psis=NA; _psif=NA
   for kv in $_cs; do
     k=${kv%%=*}; v=${kv#*=}
     case "$k" in
       state) _state=$v;; pid) _pid=$v;; cam) _cam=$v;; shield) _shield=$v;; sc) _sc=$v;; storm) _storm=$v;;
-      rogue) _rogue=$v;; compact) _compact=$v;; rollback) _rollback=$v;; crash) _crash=$v;;
+      rogue) _rogue=$v;; rollback) _rollback=$v;; crash) _crash=$v;;
       ssheap) _ssheap=$v;; avail_kb) _avail=$v;; psi_s10) _psis=$v;; psi_f10) _psif=$v;;
     esac
   done
@@ -469,7 +530,7 @@ update_module_desc() {
   case "$_ssheap" in ''|*[!0-9]*) _ssheap_str="待采集";; *) _ssheap_str="$(( _ssheap / 1024 ))MB";; esac
   _sw=$(awk '/^SwapTotal/{t=$2}/^SwapFree/{f=$2}END{print (t-f)/1024}' /proc/meminfo 2>/dev/null)
   _swi=${_sw%%.*}; case "$_swi" in ''|*[!0-9]*) _swi=NA;; esac
-  _nd="description=RMG MemTonic 内存守护 ($MT_VERSION)｜守护:${_state}(pid ${_pid})｜⚡本日志周期:相机${_cam}·护盾${_shield}·截屏${_sc}·风暴${_storm}·熔断${_rogue}·压实${_compact}·回滚${_rollback}·崩溃${_crash}｜可用${_avgb}MB·swap${_swi}MB·PSI ${_psis}/${_psif}·SS堆:${_ssheap_str}｜边界:不杀进程/不冻结/不动zram/不持久内核参数"
+  _nd="description=RMG MemTonic 内存守护 ($MT_VERSION)｜守护:${_state}(pid ${_pid})｜⚡本日志周期:相机${_cam}·护盾${_shield}·截屏${_sc}·风暴${_storm}·熔断${_rogue}·回滚${_rollback}·崩溃${_crash}｜可用${_avgb}MB·swap${_swi}MB·PSI ${_psis}/${_psif}·SS堆:${_ssheap_str}｜边界:不杀进程/不冻结/不动zram/不持久内核参数"
   if [ -x /data/adb/ksud ]; then
     KSU_MODULE=rmg_memtonic /data/adb/ksud module config set --temp override.description "${_nd#description=}" >/dev/null 2>&1 && return 0
   fi

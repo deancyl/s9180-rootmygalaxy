@@ -6,7 +6,7 @@ MODDIR=${0%/*}
 [ -d "$MODDIR" ] || MODDIR="/data/adb/modules/rmg_memtonic"
 
 echo "=========================================="
-echo "  RMG MemTonic 内存与异常守护 v2.0.1"
+echo "  RMG MemTonic 内存与异常守护 v2.0.3"
 echo "=========================================="
 echo ""
 

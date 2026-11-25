@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# RMG MemTonic v2.0.1 —— KernelSU 热安装钩子
+# RMG MemTonic v2.0.3 —— KernelSU 热安装钩子
 # 由 ksud 在模块文件已就位后调用。此时旧守护仍在用旧代码运行，必须先清场再拉起；
 # stop 会还原全部 renice / cpuset 改动，不留残局。
 # 失败安全：任一步缺失或失败都不影响模块文件本身，下次 root 会话由 service.sh 兜底。
@@ -16,7 +16,7 @@ if [ -d "$MODDIR/webroot" ]; then
   chmod 0644 "$MODDIR/webroot"/* 2>/dev/null
 fi
 if command -v chcon >/dev/null 2>&1; then
-  chcon -R u:object_r:adb_data_file:s0 "$MODDIR" 2>/dev/null || true
+  chcon -R u:object_r:system_file:s0 "$MODDIR" 2>/dev/null || chcon -R u:object_r:adb_data_file:s0 "$MODDIR" 2>/dev/null || true
 fi
 
 if [ -f "$MODDIR/scripts/memtonic.sh" ]; then

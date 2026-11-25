@@ -1,10 +1,12 @@
 # RMG MemTonic —— SM-S9180 内存与异常守护模块
 
-- 模块 ID：`rmg_memtonic` ｜ 版本：v2.0.1 (vc71) ｜ 适用：Galaxy S23 Ultra（SM-S9180，dm3q）KernelSU 临时 Root（late-load）方案（其他高通骁龙三星机型理论可用但不保证稳定性与效果）
+- 模块 ID：`rmg_memtonic` ｜ 版本：v2.0.3 (vc73) ｜ 适用：Galaxy S23 Ultra（SM-S9180，dm3q）KernelSU 临时 Root（late-load）方案（其他高通骁龙三星机型理论可用但不保证稳定性与效果）
 
 ## 版本历史
 
-- **v2.0.1 (vc71)（2026-11-21）**：外部审计（48 小时实测数据）精修升级。① **P0 级 Bug 修复**——`get_top_app_info` 增加 `oom_score_adj == 0` 校验，排除常驻低 PID 绑定服务（`com.samsung.SMT` 等），前台提权精准度提升至 100%；② **fluency_shield 极速省电重构**——0-fork 读取 `/proc/uptime` 单调秒、息屏短路休眠（`sleep 20`）、截屏目录零 fork 时间戳检测（`[ "$sc_dir" -nt "$RUN/sc_dir.ref" ]`）、FR-9 提权温和收敛至 `-10`（严禁 `-15`）并直读 `comm`；自耗 CPU 压缩 90%+；③ **补齐主守护 4 项断链能力**——改为亮屏 60s / 息屏 300s 零 fork 轻节拍；每轮检测软重启自愈与无障碍恢复、Dropbox 崩溃感知；每 3 分钟接入高门槛极端 CPU+IO 熔断器；每 30 分钟接入 system_server 纯 Java 堆只读预警；④ **mt_lib.sh 优雅瘦身**——彻底清除 39 个废弃死函数，代码瘦身至 550 行以内；⑤ **WebUI 同步精修**——移除旧废弃状态，新增相机护航与无障碍自愈展示，清理废弃文件读取，更新口径说明；⑥ **全生命周期零 drop_caches**——彻底移除 once/optimize 残余的 `drop_caches` 写入。
+- **v2.0.3 (vc73)（2026-11-25）**：基于 34.5 小时卡顿真机审计的精准治本升级。① **修复 `screen_off()` 误缓存假背光节点（P0）**——在 SM-S9180 上 `/sys/class/backlight/panel` 常年读 `0`（`max_brightness=0`），真实节点为 `panel0-backlight`（`max_brightness=612`）。现改为显式优先 `panel0-backlight` 并校验 `max_brightness > 0` + `dumpsys power` 首次交叉验证，彻底恢复亮屏相机护航、FR-9 前台护盾与极端熔断；② **新增高通 PerfHAL 耗尽哨兵与息屏温和重建**——每 30 分钟时间戳去重检索 `logcat -b main` 中 `ANDR-PERF-MPCTL: Perflock Submit request limit reached`，命中告警并带 6h 冷却通知，息屏期平滑重建 `perf-hal-2-3` 释放请求池；③ **修复夜间深度息屏整理条件**——改为连续息屏 ≥30 分钟 + 冷却 ≥6 小时 +（`compact_fail` 增量 ≥500 或触发过 `kswapd_growth`）+ `SwapUsed ≥ 4 GB` + `MemFree ≥ 256 MB` 且 `MemAvailable ≥ 1.5 GB` 时执行单次 `compact_memory`（全生命周期保持零 `drop_caches`）；④ **WebUI 对齐**——`collect_stats()` 补回 `compact` 计数，更新前端卡片文案与全文件版本至 `v2.0.3 (vc73)`。
+
+- **v2.0.2 (vc72)（2026-11-21）**：外部审计（48 小时实测数据）精修升级。① **P0 级 Bug 修复**——`get_top_app_info` 增加 `oom_score_adj == 0` 校验，排除常驻低 PID 绑定服务（`com.samsung.SMT` 等），前台提权精准度提升至 100%；② **fluency_shield 极速省电重构**——0-fork 读取 `/proc/uptime` 单调秒、息屏短路休眠（`sleep 20`）、截屏目录零 fork 时间戳检测（`[ "$sc_dir" -nt "$RUN/sc_dir.ref" ]`）、FR-9 提权温和收敛至 `-10`（严禁 `-15`）并直读 `comm`；自耗 CPU 压缩 90%+；③ **补齐主守护 4 项断链能力**——改为亮屏 60s / 息屏 300s 零 fork 轻节拍；每轮检测软重启自愈与无障碍恢复、Dropbox 崩溃感知；每 3 分钟接入高门槛极端 CPU+IO 熔断器；每 30 分钟接入 system_server 纯 Java 堆只读预警；④ **mt_lib.sh 优雅瘦身**——彻底清除 39 个废弃死函数，代码瘦身至 550 行以内；⑤ **WebUI 同步精修**——移除旧废弃状态，新增相机护航与无障碍自愈展示，清理废弃文件读取，更新口径说明；⑥ **全生命周期零 drop_caches**——彻底移除 once/optimize 残余的 `drop_caches` 写入。
 
 - **v2.0.0 (vc70)（2026-11-19）**：架构收敛至双核心守护（memtonic.sh + fluency_shield.sh）。全域无感相机硬件护航与雷鸟/蓝牙调度平权。
 
@@ -87,7 +89,7 @@ v1.5.0 将启动风暴治理与 Sentinel P0 安全哨兵深度融合，实现全
 
 ```text
 rmg_memtonic/
-├── module.prop         模块元数据（v2.0.1 / versionCode 71）
+├── module.prop         模块元数据（v2.0.1 / versionCode 72）
 ├── customize.sh        KernelSU 模块安装契约脚本（数据迁移与权限设置）
 ├── hotinstall.sh       免重启热安装与卡片状态自愈脚本（自动清理孤儿 update 锁）
 ├── service.sh          KernelSU 开机与软重启异步入口脚本
